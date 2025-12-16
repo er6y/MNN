@@ -4,6 +4,30 @@
 namespace MNN {
 namespace DIFFUSION {
 
+FlowMatchEulerScheduler::FlowMatchEulerScheduler(int trainTimestepsNum, float shift, bool useDynamicShifting)
+    : mTrainTimestepsNum(trainTimestepsNum), mShift(shift), mUseDynamicShifting(useDynamicShifting) {
+}
+
+std::vector<float> FlowMatchEulerScheduler::get_sigmas(int inferenceSteps) const {
+    if (inferenceSteps < 1) {
+        return {0.0f};
+    }
+    float sigmaMax = 1.0f;
+    float sigmaMin = 0.0f;
+
+    std::vector<float> sigmas(inferenceSteps + 1);
+    for (int i = 0; i < inferenceSteps; ++i) {
+        float frac = (inferenceSteps == 1) ? 0.0f : static_cast<float>(i) / static_cast<float>(inferenceSteps - 1);
+        float sigma = sigmaMax + (sigmaMin - sigmaMax) * frac;
+        if (!mUseDynamicShifting) {
+            sigma = mShift * sigma / (1.0f + (mShift - 1.0f) * sigma);
+        }
+        sigmas[i] = sigma;
+    }
+    sigmas[inferenceSteps] = 0.0f;
+    return sigmas;
+}
+
 static std::vector<float> linspace(float start, float end, int num) {
     std::vector<float> result(num);
     float step = (end - start) / (num - 1);
