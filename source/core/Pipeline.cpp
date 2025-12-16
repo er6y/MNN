@@ -19,7 +19,52 @@
 // TODO: Find better way for debug
 //#define MNN_OP_SEPERATE
 //#define MNN_PIPELINE_DEBUG
+//#define MNN_DEBUG_NAN_CHECK  // Disabled: causes severe performance degradation (GPU->CPU copy for every op)
+
+#ifdef MNN_DEBUG_NAN_CHECK
+#include <cmath>
+#include <limits>
+#endif
+
 namespace MNN {
+
+#ifdef MNN_DEBUG_NAN_CHECK
+static bool checkTensorForNaN_impl(Tensor* tensor, const char* opName, int opIndex) {
+    if (tensor == nullptr) return false;
+    size_t size = tensor->elementSize();
+    if (size == 0) return false;
+    
+    // Create a host tensor to copy data from device
+    std::unique_ptr<Tensor> hostTensor(Tensor::createHostTensorFromDevice(tensor, true));
+    if (hostTensor == nullptr) return false;
+    
+    auto host = hostTensor->host<float>();
+    if (host == nullptr) return false;
+    
+    bool hasNaN = false;
+    bool hasInf = false;
+    float minVal = std::numeric_limits<float>::infinity();
+    float maxVal = -std::numeric_limits<float>::infinity();
+    double sum = 0;
+    
+    size_t checkSize = std::min(size, (size_t)100000);
+    for (size_t i = 0; i < checkSize; ++i) {
+        float v = host[i];
+        if (std::isnan(v)) hasNaN = true;
+        if (std::isinf(v)) hasInf = true;
+        if (v < minVal) minVal = v;
+        if (v > maxVal) maxVal = v;
+        sum += v;
+    }
+    
+    if (hasNaN || hasInf) {
+        MNN_PRINT("[NaN_CHECK] Op[%d] %s: hasNaN=%d, hasInf=%d, min=%.6f, max=%.6f, mean=%.6f, size=%zu\n",
+                  opIndex, opName, hasNaN, hasInf, minVal, maxVal, (float)(sum/checkSize), size);
+        return true;
+    }
+    return false;
+}
+#endif
 static std::set<OpType> _getQuantPropagateOp(Runtime::CompilerType type) {
     std::set<OpType> propagateOpTypes = { OpType_Raster, OpType_ReLU, OpType_ReLU6, OpType_Pooling,
                                           OpType_Interp, OpType_CropAndResize, OpType_ROIPooling};
@@ -1166,6 +1211,114 @@ ErrorCode Pipeline::execute() {
                 _exitExecute();
                 return code;
             }
+#ifdef MNN_DEBUG_NAN_CHECK
+            // Check outputs for NaN after each op execution
+            // Use static counter that resets when we detect a new model execution
+            static int globalOpIndex = 0;
+            static bool foundFirstNaN = false;
+            static int modelExecutionCount = 0;
+            
+            // Detect new model execution by checking if this is op index 0 pattern
+            // Reset counter at start of each Pipeline::execute() call
+            if (cmdIndex == 0 && &info == &mInfo.second.front()) {
+                // This is the first command of the first info block - new model execution
+                modelExecutionCount++;
+                globalOpIndex = 0;
+                foundFirstNaN = false;
+                MNN_PRINT("[NaN_DEBUG] ========== MODEL EXECUTION #%d START ==========\n", modelExecutionCount);
+            }
+            
+            const char* opName = cmd.op->name() ? cmd.op->name()->c_str() : "unknown";
+            
+            for (auto output : cmd.workOutputs) {
+                if (output != nullptr) {
+                    std::unique_ptr<Tensor> hostTensor(Tensor::createHostTensorFromDevice(output, true));
+                    if (hostTensor != nullptr && hostTensor->host<float>() != nullptr) {
+                        size_t sz = hostTensor->elementSize();
+                        float* h = hostTensor->host<float>();
+                        bool hasNaN = false, hasInf = false;
+                        float mn = h[0], mx = h[0];
+                        size_t checkSize = sz < 50000 ? sz : 50000;
+                        for (size_t j = 0; j < checkSize; ++j) {
+                            if (std::isnan(h[j])) hasNaN = true;
+                            if (std::isinf(h[j])) hasInf = true;
+                            if (!std::isnan(h[j]) && !std::isinf(h[j])) {
+                                if (h[j] < mn) mn = h[j];
+                                if (h[j] > mx) mx = h[j];
+                            }
+                        }
+                        
+                        // Found NaN! Print detailed info including all inputs
+                        if ((hasNaN || hasInf) && !foundFirstNaN) {
+                            foundFirstNaN = true;
+                            MNN_PRINT("[NaN_FOUND] Model#%d Op[%d] %s (type=%s): FIRST NaN/Inf! size=%zu, hasNaN=%d, hasInf=%d, first=%.6f\n",
+                                      modelExecutionCount, globalOpIndex, opName, EnumNameOpType(cmd.op->type()), sz, hasNaN ? 1 : 0, hasInf ? 1 : 0, h[0]);
+                            MNN_PRINT("[NaN_FOUND] Op[%d] has %d inputs:\n", globalOpIndex, (int)cmd.workInputs.size());
+                            for (int ii = 0; ii < (int)cmd.workInputs.size(); ++ii) {
+                                auto input = cmd.workInputs[ii];
+                                if (input != nullptr) {
+                                    std::unique_ptr<Tensor> hostIn(Tensor::createHostTensorFromDevice(input, true));
+                                    if (hostIn != nullptr && hostIn->host<float>() != nullptr) {
+                                        size_t isz = hostIn->elementSize();
+                                        float* ih = hostIn->host<float>();
+                                        float imn = ih[0], imx = ih[0];
+                                        bool iNaN = false, iInf = false;
+                                        size_t ichk = isz < 50000 ? isz : 50000;
+                                        for (size_t j = 0; j < ichk; ++j) {
+                                            if (std::isnan(ih[j])) iNaN = true;
+                                            if (std::isinf(ih[j])) iInf = true;
+                                            if (!std::isnan(ih[j]) && !std::isinf(ih[j])) {
+                                                if (ih[j] < imn) imn = ih[j];
+                                                if (ih[j] > imx) imx = ih[j];
+                                            }
+                                        }
+                                        MNN_PRINT("[NaN_FOUND] Input[%d]: size=%zu, min=%.6f, max=%.6f, hasNaN=%d, hasInf=%d, first=%.6f\n",
+                                                  ii, isz, imn, imx, iNaN ? 1 : 0, iInf ? 1 : 0, ih[0]);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Print summary for ops around the suspected NaN source (Op2090-2100)
+                        // Op2096 (Raster) is first NaN in new log, need to see Op2090-2095
+                        bool isTargetRange = (globalOpIndex >= 2090 && globalOpIndex <= 2100);
+                        if (globalOpIndex < 30 || isTargetRange || hasNaN) {
+                            MNN_PRINT("[M%d_Op%d] %s (type=%s): size=%d, min=%.4f, max=%.4f, NaN=%d, Inf=%d\n", 
+                                      modelExecutionCount, globalOpIndex, opName, EnumNameOpType(cmd.op->type()), 
+                                      (int)sz, mn, mx, hasNaN ? 1 : 0, hasInf ? 1 : 0);
+                            // For target range, also print inputs
+                            if (isTargetRange) {
+                                MNN_PRINT("[M%d_Op%d] has %d inputs:\n", modelExecutionCount, globalOpIndex, (int)cmd.workInputs.size());
+                                for (int ii = 0; ii < (int)cmd.workInputs.size(); ++ii) {
+                                    auto input = cmd.workInputs[ii];
+                                    if (input != nullptr) {
+                                        std::unique_ptr<Tensor> hostIn(Tensor::createHostTensorFromDevice(input, true));
+                                        if (hostIn != nullptr && hostIn->host<float>() != nullptr) {
+                                            size_t isz = hostIn->elementSize();
+                                            float* ih = hostIn->host<float>();
+                                            float imn = ih[0], imx = ih[0];
+                                            bool iNaN = false, iInf = false;
+                                            size_t ichk = isz < 50000 ? isz : 50000;
+                                            for (size_t j = 0; j < ichk; ++j) {
+                                                if (std::isnan(ih[j])) iNaN = true;
+                                                if (std::isinf(ih[j])) iInf = true;
+                                                if (!std::isnan(ih[j]) && !std::isinf(ih[j])) {
+                                                    if (ih[j] < imn) imn = ih[j];
+                                                    if (ih[j] > imx) imx = ih[j];
+                                                }
+                                            }
+                                            MNN_PRINT("[M%d_Op%d] Input[%d]: size=%zu, min=%.6f, max=%.6f, NaN=%d, Inf=%d\n",
+                                                      modelExecutionCount, globalOpIndex, ii, isz, imn, imx, iNaN ? 1 : 0, iInf ? 1 : 0);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            globalOpIndex++;
+#endif
         }
     }
     _exitExecute();

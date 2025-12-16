@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstdlib>
 #include "diffusion/diffusion.hpp"
 #define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
@@ -8,7 +9,7 @@ using namespace MNN::DIFFUSION;
 int main(int argc, const char* argv[]) {
     if (argc < 9) {
         MNN_PRINT("=====================================================================================================================\n");
-        MNN_PRINT("Usage: ./diffusion_demo <resource_path> <model_type> <memory_mode> <backend_type> <iteration_num> <random_seed> <output_image_name> <prompt_text>\n");
+        MNN_PRINT("Usage: ./diffusion_demo <resource_path> <model_type> <memory_mode> <backend_type> <iteration_num> <random_seed> <output_image_name> [image_size] <prompt_text>\n");
         MNN_PRINT("=====================================================================================================================\n");
         return 0;
     }
@@ -21,8 +22,19 @@ int main(int argc, const char* argv[]) {
     auto random_seed = atoi(argv[6]);
     auto img_name = argv[7];
 
+    int image_size = 0;
+    int prompt_start = 8;
+    if (argc >= 10) {
+        char* endptr = nullptr;
+        long v = strtol(argv[8], &endptr, 10);
+        if (endptr != nullptr && *endptr == '\0') {
+            image_size = (int)v;
+            prompt_start = 9;
+        }
+    }
+
     std::string input_text;
-    for (int i = 8; i < argc; ++i) {
+    for (int i = prompt_start; i < argc; ++i) {
         input_text += argv[i];
         if (i < argc - 1) {
             input_text += " ";
@@ -30,12 +42,15 @@ int main(int argc, const char* argv[]) {
     }
     
     MNN_PRINT("Model resource path: %s\n", resource_path);
-    if(model_type == STABLE_DIFFUSION_1_5) {
+    if (model_type == STABLE_DIFFUSION_1_5) {
         MNN_PRINT("Model type is stable diffusion 1.5\n");
     } else if (model_type == STABLE_DIFFUSION_TAIYI_CHINESE) {
         MNN_PRINT("Model type is stable diffusion taiyi chinese version\n");
+    } else if (model_type == STABLE_DIFFUSION_ZIMAGE) {
+        MNN_PRINT("Model type is ZImage diffusion model\n");
     } else {
         MNN_PRINT("Error: Model type %d not supported, please check\n", (int)model_type);
+        return 0;
     }
 
     if(memory_mode == 1) {
@@ -48,7 +63,12 @@ int main(int argc, const char* argv[]) {
     MNN_PRINT("Prompt text: %s\n", input_text.c_str());
 
     
-    std::unique_ptr<Diffusion> diffusion(Diffusion::createDiffusion(resource_path, model_type, backend_type, memory_mode));
+    std::unique_ptr<Diffusion> diffusion;
+    if (model_type == STABLE_DIFFUSION_ZIMAGE && image_size > 0) {
+        diffusion.reset(Diffusion::createDiffusion(resource_path, model_type, backend_type, memory_mode, image_size));
+    } else {
+        diffusion.reset(Diffusion::createDiffusion(resource_path, model_type, backend_type, memory_mode));
+    }
 
     diffusion->load();
     
