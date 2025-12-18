@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <cstdlib>
 
 #if defined(_MSC_VER)
 #include <Windows.h>
@@ -36,31 +37,58 @@ using namespace CV;
 namespace MNN {
 namespace DIFFUSION {
 
-#if !defined(MNN_DIFFUSION_DEBUG_STATS)
-template <typename T>
-static inline void print_array_stats(const std::string&, const T*, size_t, size_t = 8) {
+static inline bool diffusion_debug_enabled() {
+    static int enabled = -1;
+    if (enabled >= 0) {
+        return enabled != 0;
+    }
+    const char* env = ::getenv("MNN_DIFFUSION_DEBUG");
+    if (env && env[0] != '\0' && !(env[0] == '0' && env[1] == '\0')) {
+        enabled = 1;
+    } else {
+        enabled = 0;
+    }
+    return enabled != 0;
 }
-static inline void print_var_stats(const std::string&, VARP, size_t = 8) {
-}
-#else
+
 template <typename T>
 static void print_array_stats(const std::string& name, const T* data, size_t size, size_t max_elems = 8) {
+    if (!diffusion_debug_enabled()) {
+        return;
+    }
     if (!data || size == 0) {
         MNN_PRINT("[STAT] %s: empty, size=0\n", name.c_str());
         return;
     }
+    size_t nanCount = 0;
+    size_t infCount = 0;
+    size_t finiteCount = 0;
     float min_v = std::numeric_limits<float>::infinity();
     float max_v = -std::numeric_limits<float>::infinity();
     long double sum = 0.0;
     for (size_t i = 0; i < size; ++i) {
         float v = static_cast<float>(data[i]);
+        if (std::isnan(v)) {
+            nanCount += 1;
+            continue;
+        }
+        if (std::isinf(v)) {
+            infCount += 1;
+            continue;
+        }
+        finiteCount += 1;
         if (v < min_v) min_v = v;
         if (v > max_v) max_v = v;
         sum += v;
     }
-    float mean_v = static_cast<float>(sum / static_cast<long double>(size));
-    MNN_PRINT("[STAT] %s: size=%zu, min=%f, max=%f, mean=%f\n", 
-              name.c_str(), size, min_v, max_v, mean_v);
+    float mean_v = finiteCount > 0 ? static_cast<float>(sum / static_cast<long double>(finiteCount)) : std::numeric_limits<float>::quiet_NaN();
+    if (finiteCount > 0) {
+        MNN_PRINT("[STAT] %s: size=%zu, finite=%zu, nan=%zu, inf=%zu, min=%f, max=%f, mean=%f\n",
+                  name.c_str(), size, finiteCount, nanCount, infCount, min_v, max_v, mean_v);
+    } else {
+        MNN_PRINT("[STAT] %s: size=%zu, finite=%zu, nan=%zu, inf=%zu\n",
+                  name.c_str(), size, finiteCount, nanCount, infCount);
+    }
 
     size_t k = std::min(max_elems, size);
     // Build first_values string
@@ -75,6 +103,9 @@ static void print_array_stats(const std::string& name, const T* data, size_t siz
 }
 
 static void print_var_stats(const std::string& name, VARP var, size_t max_elems = 8) {
+    if (!diffusion_debug_enabled()) {
+        return;
+    }
     if (!var.get()) {
         MNN_PRINT("[STAT] %s: null VARP\n", name.c_str());
         return;
@@ -94,15 +125,24 @@ static void print_var_stats(const std::string& name, VARP var, size_t max_elems 
     oss << ")";
     MNN_PRINT("%s\n", oss.str().c_str());
 
+    VARP vf = var;
+    if (!(info->type.code == halide_type_float && info->type.bits == 32)) {
+        vf = _Cast(var, halide_type_of<float>());
+        vf.fix(VARP::CONSTANT);
+        info = vf->getInfo();
+        if (!info) {
+            MNN_PRINT("[STAT] %s: cast-to-float failed (no info)\n", name.c_str());
+            return;
+        }
+    }
     size_t size = static_cast<size_t>(info->size);
-    const float* data = var->readMap<float>();
+    const float* data = vf->readMap<float>();
     if (!data || size == 0) {
-        MNN_PRINT("[STAT] %s: empty or non-fp32 data\n", name.c_str());
+        MNN_PRINT("[STAT] %s: empty or unreadable data\n", name.c_str());
         return;
     }
     print_array_stats(name, data, size, max_elems);
 }
-#endif
 
 static inline const char* dim_format_to_string(Dimensionformat format) {
     switch (format) {
@@ -845,6 +885,9 @@ VARP Diffusion::unet(VARP text_embeddings, int iterNum, int randomSeed, float cf
                 log_var_shape_mnn("ZIMAGE_UNet_in_sample", mSampleVar);
                 log_var_shape_mnn("ZIMAGE_UNet_in_timestep", mTimestepVar);
                 log_var_shape_mnn("ZIMAGE_UNet_in_encoder_hidden_states", text_embeddings);
+                print_var_stats("ZIMAGE_UNet_in_sample_stat", mSampleVar);
+                print_var_stats("ZIMAGE_UNet_in_timestep_stat", mTimestepVar);
+                print_var_stats("ZIMAGE_UNet_in_encoder_hidden_states_stat", text_embeddings);
             }
             // Debug: print step info
             MNN_PRINT("[UNet] step=%d, sigma=%f, sigmaNext=%f, t=%f, dt=%f\n", 
@@ -979,9 +1022,13 @@ VARP Diffusion::vae_decoder(VARP latent) {
     
     auto image = output;
     image = _Relu6(image * _Const(0.5) + _Const(0.5), 0, 1);
+    print_var_stats("VAE_postprocess_float", image);
     image = _Squeeze(_Transpose(image, {0, 2, 3, 1}));
     image = _Cast(_Round(image * _Const(255.0)), halide_type_of<uint8_t>());
+    // Debug: check pixel range before/after color conversion
+    print_var_stats("VAE_postprocess_u8", _Cast(image, halide_type_of<float>()));
     image = cvtColor(image, COLOR_BGR2RGB);
+    print_var_stats("VAE_postprocess_u8_rgb", _Cast(image, halide_type_of<float>()));
     image.fix(VARP::CONSTANT);
     return image;
 }
@@ -1027,12 +1074,13 @@ bool Diffusion::run(const std::string prompt, const std::string imagePath, int i
     auto ids = mTokenizer->encode(promptForTokenizer, mMaxTextLen);
 
     auto text_embeddings = text_encoder(ids);
-    
+     
     if (progressCallback) {
         progressCallback(1 * 100 / (iterNum + 3)); // percent
     }
     auto latent = unet(text_embeddings, iterNum, randomSeed, cfgScale, progressCallback);
-    
+    print_var_stats("UNet_out_latent", latent);
+     
     auto image = vae_decoder(latent);
     bool res = imwrite(imagePath, image);
     if (res) {
@@ -1042,7 +1090,7 @@ bool Diffusion::run(const std::string prompt, const std::string imagePath, int i
     if(mMemoryMode != 1) {
         mModules[2].reset();
     }
-    
+     
     if (progressCallback) {
         progressCallback(100); // percent
     }
