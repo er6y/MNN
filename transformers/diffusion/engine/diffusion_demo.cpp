@@ -9,9 +9,10 @@ using namespace MNN::DIFFUSION;
 int main(int argc, const char* argv[]) {
     if (argc < 9) {
         MNN_PRINT("=====================================================================================================================\n");
-        MNN_PRINT("Usage: ./diffusion_demo <resource_path> <model_type> <memory_mode> <backend_type> <iteration_num> <random_seed> <output_image_name> [image_size] [cfg] [gpu_mem_mode] [precision_mode] <prompt_text>\n");
+        MNN_PRINT("Usage: ./diffusion_demo <resource_path> <model_type> <memory_mode> <backend_type> <iteration_num> <random_seed> <output_image_name> [image_size] [cfg] [gpu_mem_mode] [precision_mode] [te_on_cpu] <prompt_text>\n");
         MNN_PRINT("  gpu_mem_mode: 0=auto, 1=buffer, 2=image (only for OpenCL)\n");
         MNN_PRINT("  precision_mode: 0=auto, 1=low(FP16), 2=normal(FP32), 3=high(FP32)\n");
+        MNN_PRINT("  te_on_cpu: 0=same as unet, 1=text_encoder on CPU (recommended for large models)\n");
         MNN_PRINT("=====================================================================================================================\n");
         return 0;
     }
@@ -65,6 +66,15 @@ int main(int argc, const char* argv[]) {
             prompt_start += 1;
         }
     }
+    bool textEncoderOnCPU = false;
+    if (argc > prompt_start + 1) {
+        char* endptr = nullptr;
+        long v = strtol(argv[prompt_start], &endptr, 10);
+        if (endptr != nullptr && *endptr == '\0') {
+            textEncoderOnCPU = (v != 0);
+            prompt_start += 1;
+        }
+    }
 
     std::string input_text;
     for (int i = prompt_start; i < argc; ++i) {
@@ -96,11 +106,11 @@ int main(int argc, const char* argv[]) {
     MNN_PRINT("CFG scale: %f\n", cfgScale);
     MNN_PRINT("GPU memory mode: %d\n", (int)gpuMemoryMode);
     MNN_PRINT("Precision mode: %d\n", (int)precisionMode);
+    MNN_PRINT("Text encoder on CPU: %s\n", textEncoderOnCPU ? "true" : "false");
     MNN_PRINT("Prompt text: %s\n", input_text.c_str());
 
     
     std::unique_ptr<Diffusion> diffusion;
-    const bool textEncoderOnCPU = false;
     const int numThreads = 4;
     diffusion.reset(Diffusion::createDiffusion(resource_path, model_type, backend_type, memory_mode, image_size,
                                                 textEncoderOnCPU, gpuMemoryMode, precisionMode, numThreads));
