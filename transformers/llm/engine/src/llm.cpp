@@ -401,7 +401,7 @@ bool Llm::load() {
         outputNames.emplace_back("talker_embeds");
     }
     bool needHiddenState = mConfig->config_.value("hidden_states", false);
-    if(mConfig->speculative_type() == "mtp") {
+    if (mConfig->speculative_type() == "mtp") {
         needHiddenState = true;
     }
     if (needHiddenState) {

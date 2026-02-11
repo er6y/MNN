@@ -202,6 +202,12 @@ static bool shouldSplitStrassen(int e, int l, int h, int currentDepth, int maxDe
         1.0 * e / 1024 * l / 1024 * h / 1024 < 4.0) {
         return false;
     }
+    // Disable Strassen for very large matrices: output [e,h] > 256MB fp16 causes kernel failures
+    // e.g. FFN [8192,3072,9216] in 1024 edit mode. Sub-matrix accumulation exceeds GPU limits,
+    // cap at e*h <= 128M elements.
+    if ((int64_t)e * h > 128 * 1024 * 1024) {
+        return false;
+    }
     const int eSub = e / 2;
     const int hSub = h / 2;
     const int lSub = l / 2;

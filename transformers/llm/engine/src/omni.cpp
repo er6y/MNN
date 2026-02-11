@@ -869,9 +869,8 @@ std::vector<int> Omni::qwen2VisionProcess(VARP image) {
         auto attention_mask_ptr = attention_mask->writeMap<float>();
         ::memset(attention_mask_ptr, 0, seq_len * seq_len * sizeof(float));
         attention_mask_ptr = attention_mask_ptr + seq_len * seq_len;
-        for (int i = 0; i < seq_len * seq_len; i++) {
-            attention_mask_ptr[i] = std::numeric_limits<float>::lowest();
-        }
+        // Use std::fill instead of loop for better performance
+        std::fill(attention_mask_ptr, attention_mask_ptr + seq_len * seq_len, std::numeric_limits<float>::lowest());
         for (size_t i = 1; i < cu_window_seqlens.size(); ++i) {
             for (int j = cu_window_seqlens[i - 1]; j < cu_window_seqlens[i]; ++j) {
                 for (int k = cu_window_seqlens[i - 1]; k < cu_window_seqlens[i]; ++k) {
@@ -1665,6 +1664,9 @@ std::vector<int> Omni::visionProcess(VARP image) {
         mVisionSizeOverridden = false;
         return std::vector<int>(0);
     }
+    if (mVisionModule == nullptr) {
+        return std::vector<int>(0);
+    }
     Timer _t;
     std::vector<int> imgIds;
     const auto inputNames = mVisionModule->getInfo()->inputNames;
@@ -2015,10 +2017,9 @@ std::vector<int> Omni::processImageContent(const std::string& content, const std
             mVisionWidth = it->second.width;
             mVisionSizeOverridden = true;
         }
-        // MNN_PRINT("processImageContent: using placeholder '%s' with size %dx%d", content.c_str(), mVisionWidth, mVisionHeight);
-        return visionProcess(it->second.image_data);
+        auto result = visionProcess(it->second.image_data);
+        return result;
     }
-    // MNN_PRINT("processImageContent: treating '%s' as file path or URL", content.c_str());
     return multimodeProcess("img", content);
 }
 
