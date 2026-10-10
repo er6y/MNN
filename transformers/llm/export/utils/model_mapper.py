@@ -715,6 +715,7 @@ class ModelMapper:
         self.regist('qwen2_vl', qwen2vl_map)
         self.regist('qwen2_5_vl', qwen2vl_map)
         qwen3vl_config = {
+            "tie_last_hidden_states": "text_config.tie_last_hidden_states",
             'hidden_size': 'text_config.hidden_size',
             'head_dim': 'text_config.head_dim',
             'num_attention_heads': 'text_config.num_attention_heads',

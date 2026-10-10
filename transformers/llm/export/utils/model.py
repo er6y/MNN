@@ -539,10 +539,19 @@ class LlmModel(PreTrainedModel):
         final_layernorm = hidden_states
         logits_index_long = logits_index.to(torch.int64)
         if self.mtp is None:
-            hidden_states = hidden_states[:, logits_index_long:, :]
-            hidden_states = self.final_layernorm(hidden_states)
-            # default: set hidden_state before lm_head as output node
-            final_layernorm = hidden_states
+            # Qwen3-VL TE (DiT consumer) needs the PRE-final-norm full sequence;
+            # text_config.tie_last_hidden_states=False selects this export mode.
+            prenorm_mode = (getattr(self.config, "tie_last_hidden_states", True) is False
+                            and self.config.model_type in ("qwen3_vl", "qwen3_vl_moe"))
+            if prenorm_mode:
+                final_layernorm = hidden_states
+                logits = self.lm(self.final_layernorm(hidden_states[:, logits_index_long:, :]))
+            else:
+                hidden_states = hidden_states[:, logits_index_long:, :]
+                hidden_states = self.final_layernorm(hidden_states)
+                # default: set hidden_state before lm_head as output node
+                final_layernorm = hidden_states
+                logits = self.lm(hidden_states)
         else:
             # final_layernorm need compute all logists
             if self.config.model_type == 'mimo':
@@ -551,7 +560,7 @@ class LlmModel(PreTrainedModel):
             if self.config.model_type == 'poi_qwen2_mtp':
                 final_layernorm = hidden_states # poi
             hidden_states = hidden_states[:, logits_index_long:, :]
-        logits = self.lm(hidden_states)
+        logits = self.lm(hidden_states) if self.mtp is not None else logits
 
         if self.args and (self.args.eagle_path is not None or (hasattr(self.args, 'dflash_target_layer_ids') and self.args.dflash_target_layer_ids)):
             final_layernorm = torch.cat(spec_hidden_states, dim=-1)

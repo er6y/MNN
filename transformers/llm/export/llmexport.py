@@ -472,7 +472,10 @@ class LlmExporter(torch.nn.Module):
                 # if isinstance(self.config.num_attention_heads, list):
                 # Keep custom Attention in the exported LLM graph so runtime decode uses KV cache.
                 # HunyuanVL still disables MNNConvert transformerFuse separately.
-                self.model.blocks[i].self_attn.export_fused_attn = True
+                # OSS runtime has no FusedAttention executor: --disable_transformer_c4
+                # also exports standard attention (prefill-only models like TE do not need it).
+                if getattr(self.args, "transformer_c4", True):
+                    self.model.blocks[i].self_attn.export_fused_attn = True
                 is_moe = hasattr(self.model.blocks[i].mlp, 'is_moe') and self.model.blocks[i].mlp.is_moe
                 if is_moe:
                     self.model.blocks[i].mlp.export_moe = True
@@ -808,7 +811,8 @@ class EmbeddingExporter(LlmExporter):
             return faker
         with torch.no_grad():
             for i in range(len(self.model.blocks)):
-                self.model.blocks[i].self_attn.export_fused_attn = True
+                if getattr(self.args, "transformer_c4", True):
+                    self.model.blocks[i].self_attn.export_fused_attn = True
                 for name, child in self.model.blocks[i].self_attn.named_children():
                     if isinstance(child, torch.nn.Linear):
                         setattr(self.model.blocks[i].self_attn, name, build_faker(child, f'/layers.{i}/self_attn/{name}/Linear'))
