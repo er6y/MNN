@@ -691,6 +691,11 @@ class AwqQuantizer:
         split="train",
         text_column="text",
     ):
+        if isinstance(data, str) and data.endswith(".txt"):
+            # Plain text file: one prompt per line (diffusion TE calibration).
+            with open(data, encoding="utf-8") as f:
+                data = [l.strip() for l in f if l.strip()]
+
         if isinstance(data, str):
             from datasets import load_dataset
             if data == "pileval":

@@ -71,7 +71,9 @@ bool initConstTensors(std::vector<std::shared_ptr<Tensor>>& tensors, const Net* 
                 return false;
             }
             if (parameter->dataType() == DataType_DT_HALF) {
-                if (nullptr == parameter->uint8s()) {
+                // External-data blobs carry no inline uint8s; only reject inline
+                // half consts that lack data entirely.
+                if (!USE_EXTERNAL_DATA(parameter) && nullptr == parameter->uint8s()) {
                     // Error half const
                     code = INVALID_VALUE;
                     return false;
