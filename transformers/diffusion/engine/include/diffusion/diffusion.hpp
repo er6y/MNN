@@ -135,6 +135,7 @@ typedef enum {
     STABLE_DIFFUSION_ZIMAGE = 4,
     LONGCAT_IMAGE_EDIT = 5,
     FLUX2_KLEIN_DIFFUSION = 6,
+    QWEN_IMAGE_21_DIFFUSION = 7,
     DIFFUSION_MODEL_USER
 } DiffusionModelType;
 
@@ -224,6 +225,11 @@ public:
 
     virtual bool load() = 0;
 
+    // Weight mmap: the base ctor reads <modelPath>/config.json ("weight_mmap_dir",
+    // "weight_mmap_cached", "mmap_file_size_mb"); may also be set programmatically
+    // before load(). Applied to every runtime this engine creates.
+    void setWeightMmap(const std::string& path, int useCachedMmap, int mmapFileSizeMB);
+
     // Image processing utility functions (static, model-agnostic)
     static VARP resizeAndCenterCrop(VARP image, int targetW, int targetH);
     static VARP bgrToRgb(VARP bgrImage);
@@ -279,6 +285,11 @@ protected:
 
     // Unified scheduler configuration (shared by ZImage, LongCat, Flux2Klein)
     SchedulerConfig mSchedulerConfig;
+
+    // Weight-mmap options (read from <modelPath>/config.json by the base ctor)
+    std::string mWeightMmapPath; // empty = mmap disabled
+    int mUseCachedMmap  = 0;     // 1 = reuse an existing mmap cache on the next load
+    int mMmapFileSizeMB = 0;     // per-file mmap size floor in MB (0 = runtime default)
 };
 
 }

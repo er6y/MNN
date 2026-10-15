@@ -47,6 +47,15 @@ class SliceTfComputer : public SizeComputer {
         for (int i = 0; i < input->buffer().dimensions; i++) {
             dim = sizePtr[i];
             auto begin = beginPtr[i];
+            if (dim <= 0) {
+                printf("[SliceTfDebug] op=%s indims=[", op->name() ? op->name()->c_str() : "?");
+                for (int d2 = 0; d2 < input->buffer().dimensions; ++d2) printf("%d,", input->buffer().dim[d2].extent);
+                printf("] begins=[");
+                for (int d2 = 0; d2 < begin_tensor->buffer().dim[0].extent; ++d2) printf("%d,", beginPtr[d2]);
+                printf("] sizes=[");
+                for (int d2 = 0; d2 < size_tensor->buffer().dim[0].extent; ++d2) printf("%d,", sizePtr[d2]);
+                printf("]\n");
+            }
             if (begin < 0) {
                 begin += input->length(i);
             }

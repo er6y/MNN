@@ -172,6 +172,9 @@ public:
         }
         if (totalSizeInput != totalSizeOutput) {
             MNN_PRINT("Reshape error: %d -> %d\n", totalSizeInput, totalSizeOutput);
+            for (int i = 0; i < input->buffer().dimensions; ++i) { /* DBG-DIMS */
+                MNN_PRINT("  inDim[%d]=%d\n", i, input->length(i));
+            }
             return false;
         }
         TensorUtils::getDescribe(output)->dimensionFormat = TensorUtils::getDescribe(input)->dimensionFormat;

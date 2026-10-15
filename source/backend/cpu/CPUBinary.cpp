@@ -272,7 +272,13 @@ public:
                 return new CPUBinary(backend, func, op->main_as_BinaryOp()->activationType());
             }
         }
-        MNN_ERROR("CpuBinary: unsupported data type (bits: %d, code: %d)\n", dataType.bits, dataType.code);
+        MNN_ERROR("CpuBinary: unsupported data type (bits: %d, code: %d), binaryOp=%d, layer=%s\n", dataType.bits, dataType.code, type, op->name() ? op->name()->c_str() : "?");
+        for (int i = 0; i < (int)inputs.size() && i < 2; i++) {
+            auto dims = inputs[i]->shape();
+            std::string s;
+            for (int d : dims) s += " " + std::to_string(d);
+            MNN_ERROR("  input[%d] dims:%s\n", i, s.c_str());
+        }
         return nullptr;
     }
 };

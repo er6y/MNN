@@ -305,8 +305,27 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
             }
             dense_op->main.type  = OpParameter_Convolution2D;
             dense_op->main.value = dense.release();
-            auto rank = _Rank(input);
-            auto inputShape = _Shape(input, NCHW);
+            VARP rank;
+            VARP inputShape;
+            {
+                bool dimsStatic = false;
+                if (input->getInfo() != nullptr) {
+                    auto& idm = input->getInfo()->dim;
+                    dimsStatic = !idm.empty() && std::all_of(idm.begin(), idm.end(), [](int x){ return x > 0; });
+                }
+                if (dimsStatic) {
+                    // Static input dims: bake rank/shape as constants so the
+                    // reshape-vector chain folds at conversion time instead of
+                    // relying on MNN's runtime scheduling of size tensors.
+                    std::vector<int> sv = input->getInfo()->dim;
+                    int r = (int)sv.size();
+                    rank = _Scalar<int>(r);
+                    inputShape = _Const(sv.data(), {r}, NCHW, halide_type_of<int>());
+                } else {
+                    rank = _Rank(input);
+                    inputShape = _Shape(input, NCHW);
+                }
+            }
             auto inputL = _Unsqueeze(_Scalar<int>(num_input), {0});
             inputL.fix(VARP::CONSTANT);
             auto outputH = _Unsqueeze(_Scalar<int>(num_output), {0});
@@ -320,9 +339,38 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
                 remainBegin = _Scalar<int>(2);
                 inputELength = _Scalar<int>(1);
             }
-            auto rankRemain = _Unsqueeze(rank - remainBegin, {0});
             VARP inputE;
-            VARP inputRemain = _Slice(inputShape, _Unsqueeze(_Scalar<int>(0), {0}), rankRemain);
+            VARP inputRemain;
+            bool fastReshape = false;
+            {
+                auto iinfo = input->getInfo();
+                static int dbgCount = 0;
+                if (dbgCount < 8) {
+                    dbgCount++;
+                    if (iinfo == nullptr) {
+                        printf("[fr-dbg] null info\n");
+                    } else {
+                        std::string frs;
+                        for (auto frd : iinfo->dim) frs += std::to_string(frd) + ",";
+                        printf("[fr-dbg] dims=[%s] last=%d num_input=%d dim0=%d\n", frs.c_str(),
+                               iinfo->dim.back(), num_input, iinfo->dim[0]);
+                    }
+                }
+                if (iinfo != nullptr && iinfo->dim.size() >= 2 && iinfo->dim.back() == num_input &&
+                    iinfo->dim[0] == 1) {
+                    // batch-1 + static channel dim: the post-Conv output reshape
+                    // collapses to MNN-native -1 inference. The Shape/Rank/SliceTf
+                    // chain built below is mis-scheduled by MNN's resize at large
+                    // graph sizes (zero/garbage outputs from block ~17 up).
+                    inputRemain = _Unsqueeze(_Scalar<int>(1), {0});
+                    inputE = _Unsqueeze(_Scalar<int>(-1), {0});
+                    fastReshape = true;
+                }
+            }
+            auto rankRemain = _Unsqueeze(rank - remainBegin, {0});
+            if (!fastReshape) {
+            inputRemain = _Slice(inputShape, _Unsqueeze(_Scalar<int>(0), {0}), rankRemain);
+            }
             if (transposeA) {
                 inputE = _Slice(inputShape, _Unsqueeze(rank - _Scalar<int>(1), {0}), _Unsqueeze(_Scalar<int>(1), {0}));
                 if (format == MNN_DATA_FORMAT_NHWC) {
@@ -331,7 +379,9 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
                     input = _ReshapeF(input, _Concat({_Unsqueeze(_Scalar<int>(-1), {0}), inputL, inputE, _Unsqueeze(_Scalar<int>(1), {0})}, 0), format);
                 }
             } else {
+                if (!fastReshape) {
                 inputE = _Slice(inputShape, rankRemain, _Unsqueeze(inputELength, {0}));
+                }
                 if (format == MNN_DATA_FORMAT_NHWC) {
                     input = _ReshapeF(input, _Concat({_Unsqueeze(_Scalar<int>(-1), {0}), _Unsqueeze(_Scalar<int>(1), {0}), _Unsqueeze(_Scalar<int>(1), {0}), inputL}, 0), format);
                 } else {
@@ -540,8 +590,27 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
             dense_op->type = OpType_ConvInt8;
             dense_op->main.type  = OpParameter_Convolution2D;
             dense_op->main.value = dense.release();
-            auto rank = _Rank(input);
-            auto inputShape = _Shape(input, NCHW);
+            VARP rank;
+            VARP inputShape;
+            {
+                bool dimsStatic = false;
+                if (input->getInfo() != nullptr) {
+                    auto& idm = input->getInfo()->dim;
+                    dimsStatic = !idm.empty() && std::all_of(idm.begin(), idm.end(), [](int x){ return x > 0; });
+                }
+                if (dimsStatic) {
+                    // Static input dims: bake rank/shape as constants so the
+                    // reshape-vector chain folds at conversion time instead of
+                    // relying on MNN's runtime scheduling of size tensors.
+                    std::vector<int> sv = input->getInfo()->dim;
+                    int r = (int)sv.size();
+                    rank = _Scalar<int>(r);
+                    inputShape = _Const(sv.data(), {r}, NCHW, halide_type_of<int>());
+                } else {
+                    rank = _Rank(input);
+                    inputShape = _Shape(input, NCHW);
+                }
+            }
             auto inputL = _Unsqueeze(_Scalar<int>(numberInput), {0});
             inputL.fix(VARP::CONSTANT);
             auto outputH = _Unsqueeze(_Scalar<int>(numberOutput), {0});

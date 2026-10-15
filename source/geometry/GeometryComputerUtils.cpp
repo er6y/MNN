@@ -193,11 +193,33 @@ ErrorCode GeometryComputerUtils::shapeComputeAndGeometryTransform(
         }
         if ((!skipShapeCompute) && needCompute) {
             auto res = SizeComputer::computeOutputSize(info.op, info.inputs, info.outputs);
+            { /* TRACE-DIMS */
+                static const char* dbg = getenv("MNN_TRACE_DIMS");
+                if (dbg != nullptr && res) {
+                    for (int n = 0; n < (int)info.outputs.size(); ++n) {
+                        auto t = info.outputs[n];
+                        std::string dims;
+                        for (int i = 0; i < t->buffer().dimensions; ++i) {
+                            dims += std::to_string(t->length(i)) + ",";
+                        }
+                        const char* nm = info.op->name() != nullptr ? info.op->name()->c_str() : "?";
+                        MNN_PRINT("[dim] %s -> out[%d] rank=%d [%s]\n", nm, n, t->buffer().dimensions, dims.c_str());
+                    }
+                }
+            }
             if (!res) {
                 if (info.op->name() != nullptr) {
                     MNN_ERROR("Compute Shape Error for %s\n", info.op->name()->c_str());
                 } else {
                     MNN_ERROR("Compute Shape Error for %d\n", info.op->type());
+                }
+                for (int n = 0; n < (int)info.inputs.size(); ++n) { /* DBG-DIMS */
+                    auto t = info.inputs[n];
+                    std::string dims;
+                    for (int i = 0; i < t->buffer().dimensions; ++i) {
+                        dims += std::to_string(t->length(i)) + ",";
+                    }
+                    MNN_ERROR("  in[%d] rank=%d dims=[%s]\n", n, t->buffer().dimensions, dims.c_str());
                 }
                 return COMPUTE_SIZE_ERROR;
             }

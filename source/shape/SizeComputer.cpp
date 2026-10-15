@@ -280,7 +280,12 @@ bool SizeComputer::computeBroadCastDims(const std::vector<Tensor*>& inputs,
             const int input1Index = i - diffDimension;
             int dim1 = input1->buffer().dim[input1Index].extent;
             if (dim1 != outputDims[i] && (dim1 != 1 && outputDims[i] != 1)) {
-                MNN_ERROR("Broad cast error, dim1 = %d, dim2 = %d\n", dim1, outputDims[i]);
+                MNN_ERROR("Broad cast error, dim1 = %d, dim2 = %d, inputs:\n", dim1, outputDims[i]);
+                for (int t = 0; t < (int)inputs.size(); ++t) {
+                    printf("  input%d dims=[", t);
+                    for (int d = 0; d < inputs[t]->dimensions(); ++d) printf("%d,", inputs[t]->length(d));
+                    printf("]\n");
+                }
                 return false;
             }
             if (dim1 == outputDims[i]) {

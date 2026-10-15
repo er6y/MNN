@@ -55,7 +55,12 @@ class ConcatSizeComputer : public SizeComputer {
                 continue;
             }
             if (inputRank != ob.dimensions) {
-                MNN_ERROR("Concat op input %d rank %d not match output rank %d\n", (int)i, inputRank, ob.dimensions);
+                MNN_ERROR("Concat op input %d rank %d not match output rank %d, all inputs:\n", (int)i, inputRank, ob.dimensions);
+                for (int t = 0; t < (int)inputs.size(); ++t) {
+                    printf("  input%d rank=%d dims=[", t, inputs[t]->dimensions());
+                    for (int d = 0; d < inputs[t]->dimensions(); ++d) printf("%d,", inputs[t]->length(d));
+                    printf("]\n");
+                }
                 return false;
             }
         }

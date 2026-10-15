@@ -1065,11 +1065,12 @@ ErrorCode Pipeline::_allocForTensor(int index, bool allocInput) {
                         for (auto& scanCmdP : scanInfo.executeBuffer.command) {
                             for (auto st : scanCmdP->workOutputs) {
                                 auto sdes = TensorUtils::getDescribe(st);
-                                // Force-release large tensors with useCount<=1:
-                                // useCount=0: already done, useCount=1: last user hasn't run yet
-                                // but we know it will be released soon. Safe to reclaim now
-                                // since the buffer will be re-allocated when needed.
-                                if (sdes->useCount > 1) continue;
+                                // Only force-release truly dead (useCount==0) large
+                                // tensors. useCount==1 means one consumer has not run
+                                // yet; nulling its mem here makes that consumer read a
+                                // freshly re-allocated (garbage) buffer - observed as
+                                // VAE-decode corruption for >1GB tensors.
+                                if (sdes->useCount > 0) continue;
                                 if (sdes->usage != Tensor::InsideDescribe::NORMAL) continue;
                                 auto sdesO = TensorUtils::getDescribeOrigin(st);
                                 if (sdesO->mem.get() == nullptr) continue;

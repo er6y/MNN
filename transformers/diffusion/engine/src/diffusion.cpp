@@ -25,10 +25,19 @@ class Flux2KleinDiffusion;
 #include "diffusion/zimage_diffusion.hpp"
 #include "diffusion/longcat_diffusion.hpp"
 #include "diffusion/flux2_klein_diffusion.hpp"
+#include "diffusion/qwenimage21_diffusion.hpp"
 
 #define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
 #include <cv/cv.hpp>
+
+#if defined(_MSC_VER)
+#include <direct.h>
+#define MNN_DIFFUSION_MKDIR(p) _mkdir(p)
+#else
+#include <sys/stat.h>
+#define MNN_DIFFUSION_MKDIR(p) mkdir(p, 0755)
+#endif
 
 #if defined(_MSC_VER)
 #include <Windows.h>
@@ -52,10 +61,38 @@ void display_progress(int cur, int total){
 
 // PhiloxRNG is now defined in diffusion.hpp header
 
+
+// Parse <modelPath>/config.json for weight-mmap options. Shared by every engine: the mmap
+// wiring lives in this base class so all diffusion models benefit, config-gated by
+// "weight_mmap_dir" (empty/absent = disabled), optional "weight_mmap_cached" (bool) and
+// "mmap_file_size_mb" (int).
+static void readWeightMmapOptions(const std::string& modelPath, std::string& mmapPath,
+                                  int& useCached, int& fileSizeMB) {
+    std::ifstream f(modelPath + "/config.json");
+    if (!f.is_open()) return;
+    rapidjson::IStreamWrapper isw(f);
+    rapidjson::Document doc;
+    doc.ParseStream(isw);
+    if (doc.HasParseError() || !doc.IsObject()) return;
+    if (doc.HasMember("weight_mmap_dir") && doc["weight_mmap_dir"].IsString())
+        mmapPath = doc["weight_mmap_dir"].GetString();
+    if (mmapPath.empty()) return;
+    if (mmapPath[0] != '/' && mmapPath.find(":/") == std::string::npos)
+        mmapPath = modelPath + (modelPath.back() == '/' ? "" : "/") + mmapPath;
+    if (doc.HasMember("weight_mmap_cached") && doc["weight_mmap_cached"].IsBool() &&
+        doc["weight_mmap_cached"].GetBool())
+        useCached = 1;
+    if (doc.HasMember("mmap_file_size_mb") && doc["mmap_file_size_mb"].IsInt())
+        fileSizeMB = doc["mmap_file_size_mb"].GetInt();
+    MNN_PRINT("Diffusion: weight mmap on, dir %s (cached=%d, file_size=%dMB)\n", mmapPath.c_str(),
+              useCached, fileSizeMB);
+}
+
 // ===== Base Diffusion Implementation =====
 
 Diffusion::Diffusion(std::string modelPath, DiffusionModelType modelType, MNNForwardType backendType, int memoryMode) :
 mModelPath(modelPath), mModelType(modelType), mBackendType(backendType), mMemoryMode(memoryMode) {
+    readWeightMmapOptions(modelPath, mWeightMmapPath, mUseCachedMmap, mMmapFileSizeMB);
 }
 
 Diffusion::Diffusion(std::string modelPath, DiffusionModelType modelType, MNNForwardType backendType, int memoryMode,
@@ -67,6 +104,7 @@ Diffusion::Diffusion(std::string modelPath, DiffusionModelType modelType, MNNFor
       mTextEncoderOnCPU(textEncoderOnCPU), mVaeOnCPU(vaeOnCPU),
       mGpuMemoryMode(gpuMemoryMode), mPrecisionMode(precisionMode),
       mCFGMode(cfgMode), mNumThreads(numThreads) {
+    readWeightMmapOptions(modelPath, mWeightMmapPath, mUseCachedMmap, mMmapFileSizeMB);
 }
 
 Diffusion::~Diffusion() {
@@ -94,6 +132,12 @@ bool Diffusion::runVideo(const std::string& prompt, const std::string& outputDir
 bool Diffusion::run(const std::string prompt, const std::string outputPath, int iterNum, int randomSeed, float cfgScale, std::function<void(int)> progressCallback, const std::string inputImagePath) {
     // Default: ignore cfgScale and inputImagePath, delegate to simple run
     return run(prompt, outputPath, iterNum, randomSeed, progressCallback);
+}
+
+void Diffusion::setWeightMmap(const std::string& path, int useCachedMmap, int mmapFileSizeMB) {
+    mWeightMmapPath = path;
+    mUseCachedMmap  = useCachedMmap;
+    mMmapFileSizeMB = mmapFileSizeMB;
 }
 
 // ===== Shared Protected Helpers =====
@@ -149,6 +193,16 @@ bool Diffusion::initRuntimeManagers(bool gpuBufferMode, int attentionHint) {
     if (attentionHint > 0)
         runtime_manager_->setHint(Interpreter::ATTENTION_OPTION, attentionHint);
 
+    if (!mWeightMmapPath.empty()) {
+        // Page-cacheable weights via the llm.cpp use_mmap wiring: external .weight data is
+        // placed in an mmap pool under mWeightMmapPath and can be evicted under memory
+        // pressure instead of staying resident for the whole process lifetime.
+        MNN_DIFFUSION_MKDIR(mWeightMmapPath.c_str());
+        runtime_manager_->setExternalPath(mWeightMmapPath, Interpreter::EXTERNAL_WEIGHT_DIR);
+        if (mUseCachedMmap) runtime_manager_->setHint(Interpreter::USE_CACHED_MMAP, 1);
+        if (mMmapFileSizeMB > 0) runtime_manager_->setHint(Interpreter::MMAP_FILE_SIZE, mMmapFileSizeMB);
+    }
+
     // CPU fallback runtime for text encoder on GPU backends
     if (mTextEncoderOnCPU && (config.type == MNN_FORWARD_OPENCL || config.type == MNN_FORWARD_VULKAN)) {
         ScheduleConfig cpuConfig;
@@ -160,6 +214,12 @@ bool Diffusion::initRuntimeManagers(bool gpuBufferMode, int attentionHint) {
         cpuConfig.backendConfig = &cpuBC;
         runtime_manager_cpu_.reset(Executor::RuntimeManager::createRuntimeManager(cpuConfig));
         runtime_manager_cpu_->setHint(Interpreter::DYNAMIC_QUANT_OPTIONS, 0);
+
+        if (!mWeightMmapPath.empty()) {
+            runtime_manager_cpu_->setExternalPath(mWeightMmapPath, Interpreter::EXTERNAL_WEIGHT_DIR);
+            if (mUseCachedMmap) runtime_manager_cpu_->setHint(Interpreter::USE_CACHED_MMAP, 1);
+            if (mMmapFileSizeMB > 0) runtime_manager_cpu_->setHint(Interpreter::MMAP_FILE_SIZE, mMmapFileSizeMB);
+        }
     }
     // CPU fallback runtime for VAE on GPU backends
     if (mVaeOnCPU && (config.type == MNN_FORWARD_OPENCL || config.type == MNN_FORWARD_VULKAN)) {
@@ -172,6 +232,12 @@ bool Diffusion::initRuntimeManagers(bool gpuBufferMode, int attentionHint) {
         cpuConfig.backendConfig = &cpuBC;
         runtime_manager_vae_cpu_.reset(Executor::RuntimeManager::createRuntimeManager(cpuConfig));
         runtime_manager_vae_cpu_->setHint(Interpreter::DYNAMIC_QUANT_OPTIONS, 0);
+
+        if (!mWeightMmapPath.empty()) {
+            runtime_manager_vae_cpu_->setExternalPath(mWeightMmapPath, Interpreter::EXTERNAL_WEIGHT_DIR);
+            if (mUseCachedMmap) runtime_manager_vae_cpu_->setHint(Interpreter::USE_CACHED_MMAP, 1);
+            if (mMmapFileSizeMB > 0) runtime_manager_vae_cpu_->setHint(Interpreter::MMAP_FILE_SIZE, mMmapFileSizeMB);
+        }
     }
     return true;
 }
@@ -198,6 +264,8 @@ Diffusion* Diffusion::createDiffusion(std::string modelPath, DiffusionModelType 
         return new LongCatDiffusion(modelPath, modelType, backendType, memoryMode, 0, 0, true, false, GPU_MEMORY_AUTO, PRECISION_AUTO, CFG_MODE_AUTO, 4);
     } else if (modelType == FLUX2_KLEIN_DIFFUSION) {
         return new Flux2KleinDiffusion(modelPath, modelType, backendType, memoryMode, 0, 0, true, false, GPU_MEMORY_AUTO, PRECISION_AUTO, CFG_MODE_AUTO, 4);
+    } else if (modelType == QWEN_IMAGE_21_DIFFUSION) {
+        return new QwenImage21Diffusion(modelPath, modelType, backendType, memoryMode, 0, 0, true, false, GPU_MEMORY_AUTO, PRECISION_AUTO, CFG_MODE_AUTO, 4);
     } else {
         return new StableDiffusion(modelPath, modelType, backendType, memoryMode);
     }
@@ -210,6 +278,8 @@ Diffusion* Diffusion::createDiffusion(std::string modelPath, DiffusionModelType 
         return new LongCatDiffusion(modelPath, modelType, backendType, memoryMode, imageWidth, imageHeight, textEncoderOnCPU, vaeOnCPU, gpuMemoryMode, precisionMode, cfgMode, numThreads);
     } else if (modelType == FLUX2_KLEIN_DIFFUSION) {
         return new Flux2KleinDiffusion(modelPath, modelType, backendType, memoryMode, imageWidth, imageHeight, textEncoderOnCPU, vaeOnCPU, gpuMemoryMode, precisionMode, cfgMode, numThreads);
+    } else if (modelType == QWEN_IMAGE_21_DIFFUSION) {
+        return new QwenImage21Diffusion(modelPath, modelType, backendType, memoryMode, imageWidth, imageHeight, textEncoderOnCPU, vaeOnCPU, gpuMemoryMode, precisionMode, cfgMode, numThreads);
     } else if (modelType == SANA_DIFFUSION) {
         return new SanaDiffusion(modelPath, modelType, backendType, memoryMode, imageWidth, imageHeight, textEncoderOnCPU, vaeOnCPU, gpuMemoryMode, precisionMode, cfgMode, numThreads);
     } else if (modelType == WAN2_1_T2V) {
