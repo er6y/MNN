@@ -8,6 +8,7 @@
 //
 #include <random>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <cmath>
 #include "diffusion/longcat_diffusion.hpp"
