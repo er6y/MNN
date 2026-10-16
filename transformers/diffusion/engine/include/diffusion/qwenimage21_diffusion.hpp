@@ -60,6 +60,11 @@ private:
     std::string mTokenizerFile;
     std::string mDiTModelPath;
     std::string mVaeDecPath;
+    // json-first overrides of the embedded fallbacks (same design as Flux's
+    // scheduler_config.json / vae.bn_mean/bn_std): "sigmas" table and
+    // "vae"."latent_stats" array; empty means use the embedded constants.
+    std::vector<float> mSigmasTable;
+    std::vector<float> mLatentStatsArr;
     bool mRopeIndexInputs = false; // dynamic-size DiT takes (frame,height,width) index inputs
     std::shared_ptr<Executor::RuntimeManager> mVaeRt; // kept for staged VAE load (memory_mode==0)
 };

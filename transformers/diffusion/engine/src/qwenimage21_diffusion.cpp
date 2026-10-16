@@ -213,6 +213,21 @@ void QwenImage21Diffusion::readEngineConfig() {
             getInt("drop_idx", mDropIdx);
             if (doc.HasMember("rope_index_inputs") && doc["rope_index_inputs"].IsBool())
                 mRopeIndexInputs = doc["rope_index_inputs"].GetBool();
+            // json-first overrides (Flux-style): embedded constants are the fallback
+            if (doc.HasMember("sigmas") && doc["sigmas"].IsArray()) {
+                mSigmasTable.clear();
+                for (auto& v : doc["sigmas"].GetArray())
+                    if (v.IsFloat() || v.IsDouble()) mSigmasTable.push_back((float)v.GetDouble());
+                if (mSigmasTable.size() < 2) mSigmasTable.clear();
+            }
+            if (doc.HasMember("vae") && doc["vae"].IsObject()) {
+                const auto& vae = doc["vae"];
+                if (vae.HasMember("latent_stats") && vae["latent_stats"].IsArray()) {
+                    mLatentStatsArr.clear();
+                    for (auto& v : vae["latent_stats"].GetArray())
+                        if (v.IsFloat() || v.IsDouble()) mLatentStatsArr.push_back((float)v.GetDouble());
+                }
+            }
         }
     }
     // embeddings/tokenizer are relative to the text_encoder directory; a value
@@ -450,10 +465,10 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
     }
     int steps            = getenv("MNN_Q21_STEPS") ? atoi(getenv("MNN_Q21_STEPS"))
                                                    : (iterNum > 0 ? iterNum : 8);
-    if (steps > kTurboSigmaSteps) {
+    int maxSteps = mSigmasTable.empty() ? kTurboSigmaSteps : (int)mSigmasTable.size() - 1;
+    if (steps > maxSteps) {
         // fail fast, before the multi-GB model loads
-        MNN_ERROR("[QwenImage21] Turbo supports at most %d steps (requested %d)\n",
-                  kTurboSigmaSteps, steps);
+        MNN_ERROR("[QwenImage21] supports at most %d steps (requested %d)\n", maxSteps, steps);
         return false;
     }
     const int latentW    = (mImageWidth  > 0 ? mImageWidth  : 512) / 16;
@@ -505,25 +520,26 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
     }
 
     // 2. schedule + noise (skipped in INJECT mode: lat already loaded).
-    // Turbo distilled schedule, embedded (kTurboSigmas). steps < 8 resample the
-    // table uniformly and always terminate at sigma=0, so fewer steps still
-    // produce a complete (lower quality) image; steps > 8 has no data.
+    // Distilled sigma table: config.json "sigmas" overrides the embedded
+    // kTurboSigmas fallback. Any steps <= table-1 resample the table uniformly
+    // and always terminate at sigma=0, so fewer steps still produce a complete
+    // (lower quality) image.
+    std::vector<float> table;
+    if (!mSigmasTable.empty()) table = mSigmasTable;
+    else table.assign(kTurboSigmas, kTurboSigmas + kTurboSigmaSteps + 1);
+    maxSteps = (int)table.size() - 1;
     std::vector<float> sigmas;
-    if (steps > kTurboSigmaSteps) {
-        MNN_ERROR("[QwenImage21] Turbo supports at most %d steps (requested %d)\n",
-                  kTurboSigmaSteps, steps);
-        return false;
-    }
     sigmas.resize(steps + 1);
     for (int i = 0; i <= steps; i++) {
-        float idx = (float)i / (float)steps * (float)kTurboSigmaSteps;
+        float idx = (float)i / (float)steps * (float)maxSteps;
         int i0 = (int)idx;
-        int i1 = i0 < kTurboSigmaSteps ? i0 + 1 : kTurboSigmaSteps;
+        int i1 = i0 < maxSteps ? i0 + 1 : maxSteps;
         float fr = idx - (float)i0;
-        sigmas[i] = kTurboSigmas[i0] * (1.0f - fr) + kTurboSigmas[i1] * fr;
+        sigmas[i] = table[i0] * (1.0f - fr) + table[i1] * fr;
     }
     sigmas[steps] = 0.0f;
-    MNN_PRINT("[QwenImage21] schedule: embedded turbo table, %d steps\n", steps);
+    MNN_PRINT("[QwenImage21] schedule: %s table (%d pts), %d steps\n",
+              mSigmasTable.empty() ? "embedded" : "config", (int)table.size(), steps);
     if (injDir == nullptr) {
         // Initial noise follows the reference chain bit-for-bit-ish: torch CPU
         // randn([1,1,64,h,w], manual_seed) (MT19937 + 24-bit uniform + normal_fill_16
@@ -566,8 +582,9 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
         MNN_PRINT("[QwenImage21] img2img init: startStep=%d sigma=%.4f\n", startStep, sk);
     }
 
-    // 3. latent de-normalization stats (64 mean + 64 std, embedded)
-    const float* stats = kLatentStats;
+    // 3. latent de-normalization stats (64 mean + 64 std; json override, embedded fallback)
+    const float* stats = (mLatentStatsArr.size() >= (size_t)2 * ch) ? mLatentStatsArr.data()
+                                                                    : kLatentStats;
 
     // 4. DiT sampling
     VARP amV, tmV;
