@@ -39,8 +39,6 @@ private:
     void readEngineConfig();
     // prompt -> packed text embedding [textLen x hidden] + validity mask [textLen]
     bool textEncode(const std::string& prompt, std::vector<float>& enc, std::vector<int>& tmask);
-    // diffusers FlowMatchEulerDiscreteScheduler (dynamic exponential shift + terminal stretch)
-    void computeSchedule(int steps, int imgSeqLen, std::vector<float>& sigmas);
     static bool readFileBytes(const std::string& path, std::vector<uint8_t>& out);
     // low-memory staged loading (memory_mode==0): DiT/VAE load on demand
     bool ensureDiTLoaded();
@@ -62,8 +60,6 @@ private:
     std::string mTokenizerFile;
     std::string mDiTModelPath;
     std::string mVaeDecPath;
-    std::string mStatsFile    = "latent_stats.f32";
-    std::string mSigmasFile;      // checkpoint-embedded schedule (Turbo); empty = computeSchedule
     bool mRopeIndexInputs = false; // dynamic-size DiT takes (frame,height,width) index inputs
     std::shared_ptr<Executor::RuntimeManager> mVaeRt; // kept for staged VAE load (memory_mode==0)
 };

@@ -143,6 +143,31 @@ QwenImage21Diffusion::~QwenImage21Diffusion() {
     mModules.clear();
 }
 
+// Turbo distilled schedule (embedded, same strategy as the ZImage/LongCat/Flux
+// in-code schedules): dumped from the official checkpoint's sample_sigmas, 9 values
+// for 8 steps, terminating at 0. Latent stats: 64 per-channel mean + 64 std.
+static const int kTurboSigmaSteps = 8;
+static const float kTurboSigmas[kTurboSigmaSteps + 1] = {
+    1.0f, 0.978452981f, 0.954180002f, 0.926626027f, 0.89507997f,
+    0.845148027f, 0.704533994f, 0.414568007f, 0.0f};
+static const float kLatentStats[128] = {
+    0.512600005f, 0.772099972f, -0.0631000027f, 1.3506f, -0.78549999f, -2.10249996f, -0.345800012f, 1.37220001f,
+    1.88730001f, -1.7177f, -0.651000023f, 0.273200005f, 0.756200016f, -0.616299987f, -1.02769995f, 3.8362999f,
+    2.02099991f, 0.0472000018f, 0.931999981f, 2.00869989f, 2.49539995f, -0.1391f, -1.42490005f, 1.84640002f,
+    -0.523599982f, 1.28260005f, 3.7046001f, -1.30350006f, 2.72860003f, -1.45179999f, -1.90359998f, -1.99549997f,
+    -0.0342000015f, -1.02649999f, -0.763599992f, 3.05550003f, 0.0746000037f, -3.07509995f, -0.107600003f, 1.73759997f,
+    -1.09140003f, -1.94350004f, -0.278400004f, -1.36800003f, 0.48089999f, -0.443300009f, 0.376399994f, 0.572899997f,
+    -2.05949998f, 1.09599996f, -1.32599998f, -2.02110004f, -5.01789999f, 0.527499974f, 4.01620007f, 1.85049999f,
+    0.302599996f, 1.93729997f, 1.49370003f, 0.263200015f, 0.554700017f, -1.71210003f, -0.156200007f, 0.0304000005f,
+    3.20009995f, 3.29360008f, 3.43210006f, 3.00909996f, 3.10610008f, 4.03789997f, 4.0704999f, 3.79099989f,
+    3.07850003f, 3.6500001f, 3.93079996f, 3.09039998f, 2.87779999f, 3.76749992f, 3.73200011f, 5.07560015f,
+    3.28640008f, 4.03970003f, 3.13170004f, 4.04430008f, 2.92490005f, 3.9454f, 3.09879994f, 4.24889994f,
+    3.48959994f, 3.8513f, 3.93230009f, 3.47189999f, 3.74979997f, 4.28299999f, 3.56940007f, 4.24669981f,
+    3.90370011f, 3.29469991f, 5.07700014f, 3.50749993f, 3.26999998f, 3.47670007f, 2.80629992f, 5.11250019f,
+    3.53270006f, 4.78329992f, 3.12859988f, 4.18190002f, 3.8527f, 3.83119988f, 3.56049991f, 4.38749981f,
+    3.96239996f, 4.01679993f, 3.56430006f, 4.05499983f, 5.56139994f, 4.29629993f, 4.40799999f, 3.49589992f,
+    3.87470007f, 3.76079988f, 3.57349992f, 3.14899993f, 3.76620007f, 3.67459989f, 3.45630002f, 3.81609988f};
+
 void QwenImage21Diffusion::readEngineConfig() {
     // File layout follows the shared DiffusionConfig convention (same as ZImage/LongCat):
     //   "text_encoder": {"directory", "model", "embeddings", "tokenizer"}  LLM-style dir
@@ -184,8 +209,6 @@ void QwenImage21Diffusion::readEngineConfig() {
             auto getInt = [&](const char* k, int& v) {
                 if (doc.HasMember(k) && doc[k].IsInt()) v = doc[k].GetInt();
             };
-            getStr("latent_stats", mStatsFile);
-            getStr("sigmas_file", mSigmasFile);
             getInt("text_len", mTextLen);
             getInt("drop_idx", mDropIdx);
             if (doc.HasMember("rope_index_inputs") && doc["rope_index_inputs"].IsBool())
@@ -200,8 +223,6 @@ void QwenImage21Diffusion::readEngineConfig() {
     };
     mEmbeddingsFile = teRel(embeddingsRel);
     mTokenizerFile  = teRel(tokenizerRel);
-    // latent_stats is relative to the model base dir (may carry a sub-path)
-    if (!mStatsFile.empty() && mStatsFile[0] != '/') mStatsFile = mModelPath + "/" + mStatsFile;
 }
 
 bool QwenImage21Diffusion::readFileBytes(const std::string& path, std::vector<uint8_t>& out) {
@@ -413,32 +434,6 @@ bool QwenImage21Diffusion::textEncode(const std::string& prompt, std::vector<flo
     return true;
 }
 
-void QwenImage21Diffusion::computeSchedule(int steps, int imgSeqLen, std::vector<float>& sigmas) {
-    // diffusers FlowMatchEulerDiscreteScheduler for Qwen-Image-2.1:
-    // use_dynamic_shifting=true, time_shift_type="exponential", shift_terminal=0.02,
-    // sigma_max=1.0, sigma_min=0.001, num_train_timesteps=1000.
-    const float baseSeq = 256.f, maxSeq = 4096.f, baseShift = 0.5f, maxShift = 1.15f;
-    const float m = (maxShift - baseShift) / (maxSeq - baseSeq);
-    const float b = baseShift - m * baseSeq;
-    const float mu       = imgSeqLen * m + b;
-    const float expMu    = std::exp(mu);
-    const float terminal = 0.02f;
-    sigmas.clear();
-    for (int i = 0; i < steps; i++) {
-        float t = 1000.f - (1000.f - 1.f) * (float)i / (float)(steps > 1 ? steps - 1 : 1); // linspace(1000, 1)
-        float sigma = t / 1000.f;
-        sigma = expMu / (expMu + 1.f / sigma - 1.f);
-        sigmas.push_back(sigma);
-    }
-    // stretch so the schedule terminates at shift_terminal (steps==1 has no interior
-    // schedule to stretch; guard keeps the debug 1-step mode from dividing by zero)
-    if (steps > 1) {
-        const float scale = (1.f - sigmas.back()) / (1.f - terminal);
-        for (auto& s : sigmas) s = 1.f - (1.f - s) / scale;
-    }
-    sigmas.push_back(0.0f);
-}
-
 bool QwenImage21Diffusion::run(const std::string prompt, const std::string outputPath, int iterNum,
                                int randomSeed, std::function<void(int)> progressCallback) {
     AUTOTIME;
@@ -455,6 +450,12 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
     }
     int steps            = getenv("MNN_Q21_STEPS") ? atoi(getenv("MNN_Q21_STEPS"))
                                                    : (iterNum > 0 ? iterNum : 8);
+    if (steps > kTurboSigmaSteps) {
+        // fail fast, before the multi-GB model loads
+        MNN_ERROR("[QwenImage21] Turbo supports at most %d steps (requested %d)\n",
+                  kTurboSigmaSteps, steps);
+        return false;
+    }
     const int latentW    = (mImageWidth  > 0 ? mImageWidth  : 512) / 16;
     const int latentH    = (mImageHeight > 0 ? mImageHeight : 512) / 16;
     const int imgSeq     = latentW * latentH;
@@ -503,26 +504,26 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
         MNN_PRINT("[QwenImage21] stage-load: TE released, DiT active\n");
     }
 
-    // 2. schedule + noise (skipped in INJECT mode: lat already loaded)
+    // 2. schedule + noise (skipped in INJECT mode: lat already loaded).
+    // Turbo distilled schedule, embedded (kTurboSigmas). steps < 8 resample the
+    // table uniformly and always terminate at sigma=0, so fewer steps still
+    // produce a complete (lower quality) image; steps > 8 has no data.
     std::vector<float> sigmas;
-    if (!mSigmasFile.empty()) {
-        // checkpoint-embedded schedule (Turbo): sigmas dumped from the PT pipeline
-        std::string sp = mSigmasFile;
-        if (sp[0] != '/') sp = mModelPath + "/" + sp;
-        std::vector<uint8_t> sb;
-        if (!readFileBytes(sp, sb) || sb.size() < sizeof(float) * (steps + 1)) {
-            MNN_ERROR("[QwenImage21] sigmas_file missing/too small: %s (%zu bytes)\n", sp.c_str(),
-                      sb.size());
-            return false;
-        }
-        const float* sf = (const float*)sb.data();
-        size_t n = sb.size() / sizeof(float);
-        sigmas.assign(sf, sf + n);
-        MNN_PRINT("[QwenImage21] schedule from %s: %zu sigmas (steps=%d)\n", sp.c_str(), n, steps);
-        if ((int)n < steps + 1) steps = (int)n - 1;
-    } else {
-        computeSchedule(steps, imgSeq, sigmas);
+    if (steps > kTurboSigmaSteps) {
+        MNN_ERROR("[QwenImage21] Turbo supports at most %d steps (requested %d)\n",
+                  kTurboSigmaSteps, steps);
+        return false;
     }
+    sigmas.resize(steps + 1);
+    for (int i = 0; i <= steps; i++) {
+        float idx = (float)i / (float)steps * (float)kTurboSigmaSteps;
+        int i0 = (int)idx;
+        int i1 = i0 < kTurboSigmaSteps ? i0 + 1 : kTurboSigmaSteps;
+        float fr = idx - (float)i0;
+        sigmas[i] = kTurboSigmas[i0] * (1.0f - fr) + kTurboSigmas[i1] * fr;
+    }
+    sigmas[steps] = 0.0f;
+    MNN_PRINT("[QwenImage21] schedule: embedded turbo table, %d steps\n", steps);
     if (injDir == nullptr) {
         // Initial noise follows the reference chain bit-for-bit-ish: torch CPU
         // randn([1,1,64,h,w], manual_seed) (MT19937 + 24-bit uniform + normal_fill_16
@@ -565,17 +566,8 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
         MNN_PRINT("[QwenImage21] img2img init: startStep=%d sigma=%.4f\n", startStep, sk);
     }
 
-    // 3. latent de-normalization stats (64 mean + 64 std)
-    std::vector<uint8_t> statsBytes;
-    {
-        std::string statsPath = mStatsFile;
-        if (statsPath.find('/') == std::string::npos) statsPath = mModelPath + "/" + mStatsFile;
-        if (!readFileBytes(statsPath, statsBytes) || statsBytes.size() < sizeof(float) * 2 * ch) {
-            MNN_ERROR("[QwenImage21] latent stats missing: %s\n", statsPath.c_str());
-            return false;
-        }
-    }
-    const float* stats = (const float*)statsBytes.data();
+    // 3. latent de-normalization stats (64 mean + 64 std, embedded)
+    const float* stats = kLatentStats;
 
     // 4. DiT sampling
     VARP amV, tmV;
