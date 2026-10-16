@@ -54,13 +54,15 @@ private:
     int mTextLen = 1024;
     int mHidden  = 4096;
     int mDropIdx = 14;
-    std::string mTeDir        = "te";
-    std::string mTeModelFile  = "llm.mnn";
+    // Resolved model paths, shared DiffusionConfig convention (ZImage/LongCat):
+    // text_encoder.{directory,model} + embeddings/tokenizer inside that directory,
+    // transformer.model (default unet.mnn), vae.decoder_model (default vae_decoder.mnn)
+    std::string mTeModelPath;
     std::string mEmbeddingsFile;
     std::string mTokenizerFile;
-    std::string mDiTFile      = "dit/unet.mnn";
-    std::string mVaeFile      = "vae/vae_decoder.mnn";
-    std::string mStatsFile    = "vae/latent_stats.f32";
+    std::string mDiTModelPath;
+    std::string mVaeDecPath;
+    std::string mStatsFile    = "latent_stats.f32";
     std::string mSigmasFile;      // checkpoint-embedded schedule (Turbo); empty = computeSchedule
     bool mRopeIndexInputs = false; // dynamic-size DiT takes (frame,height,width) index inputs
     std::shared_ptr<Executor::RuntimeManager> mVaeRt; // kept for staged VAE load (memory_mode==0)

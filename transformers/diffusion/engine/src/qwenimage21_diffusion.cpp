@@ -144,46 +144,64 @@ QwenImage21Diffusion::~QwenImage21Diffusion() {
 }
 
 void QwenImage21Diffusion::readEngineConfig() {
-    // engine-specific fields (weight_mmap_* are consumed by the Diffusion base ctor)
+    // File layout follows the shared DiffusionConfig convention (same as ZImage/LongCat):
+    //   "text_encoder": {"directory", "model", "embeddings", "tokenizer"}  LLM-style dir
+    //   "transformer":  {"model"}         default unet.mnn (+ sibling unet.mnn.weight)
+    //   "vae":          {"decoder_model"} default vae_decoder.mnn
+    // Engine-specific flat keys: sigmas_file / latent_stats / text_len / drop_idx /
+    //   rope_index_inputs. (weight_mmap_* are consumed by the Diffusion base ctor.)
+    DiffusionConfig cfg(mModelPath);
+    mTeModelPath  = cfg.text_encoder_model();
+    mDiTModelPath = cfg.unet_model();
+    mVaeDecPath   = cfg.vae_decoder_model();
+
+    std::string teDir = "text_encoder";
+    std::string embeddingsRel = "embeddings_bf16.bin";
+    std::string tokenizerRel  = "tokenizer.mtok";
     std::string path = mModelPath + "/config.json";
     std::ifstream f(path);
-    mEmbeddingsFile = mModelPath + "/" + mTeDir + "/embeddings_bf16.bin";
-    mTokenizerFile  = mModelPath + "/" + mTeDir + "/tokenizer.txt";
     if (!f.is_open()) {
         MNN_PRINT("[QwenImage21] no config.json at %s, using defaults\n", path.c_str());
-        return;
+    } else {
+        rapidjson::IStreamWrapper isw(f);
+        rapidjson::Document doc;
+        doc.ParseStream(isw);
+        if (doc.HasParseError() || !doc.IsObject()) {
+            MNN_PRINT("[QwenImage21] config.json parse failed, using defaults\n");
+        } else {
+            if (doc.HasMember("text_encoder") && doc["text_encoder"].IsObject()) {
+                const auto& te = doc["text_encoder"];
+                if (te.HasMember("directory") && te["directory"].IsString())
+                    teDir = te["directory"].GetString();
+                if (te.HasMember("embeddings") && te["embeddings"].IsString())
+                    embeddingsRel = te["embeddings"].GetString();
+                if (te.HasMember("tokenizer") && te["tokenizer"].IsString())
+                    tokenizerRel = te["tokenizer"].GetString();
+            }
+            auto getStr = [&](const char* k, std::string& v) {
+                if (doc.HasMember(k) && doc[k].IsString()) v = doc[k].GetString();
+            };
+            auto getInt = [&](const char* k, int& v) {
+                if (doc.HasMember(k) && doc[k].IsInt()) v = doc[k].GetInt();
+            };
+            getStr("latent_stats", mStatsFile);
+            getStr("sigmas_file", mSigmasFile);
+            getInt("text_len", mTextLen);
+            getInt("drop_idx", mDropIdx);
+            if (doc.HasMember("rope_index_inputs") && doc["rope_index_inputs"].IsBool())
+                mRopeIndexInputs = doc["rope_index_inputs"].GetBool();
+        }
     }
-    rapidjson::IStreamWrapper isw(f);
-    rapidjson::Document doc;
-    doc.ParseStream(isw);
-    if (doc.HasParseError() || !doc.IsObject()) {
-        MNN_PRINT("[QwenImage21] config.json parse failed, using defaults\n");
-        return;
-    }
-    auto getStr = [&](const char* k, std::string& v) {
-        if (doc.HasMember(k) && doc[k].IsString()) v = doc[k].GetString();
+    // embeddings/tokenizer are relative to the text_encoder directory; a value
+    // containing '/' is taken relative to the model base dir instead.
+    auto teRel = [&](const std::string& v) {
+        return (v.find('/') != std::string::npos) ? mModelPath + "/" + v
+                                                  : mModelPath + "/" + teDir + "/" + v;
     };
-    auto getInt = [&](const char* k, int& v) {
-        if (doc.HasMember(k) && doc[k].IsInt()) v = doc[k].GetInt();
-    };
-    getStr("text_encoder_dir", mTeDir);
-    getStr("text_encoder_model", mTeModelFile);
-    getStr("transformer", mDiTFile);
-    getStr("vae_decoder", mVaeFile);
-    getStr("embeddings_bf16", mEmbeddingsFile);
-    getStr("tokenizer", mTokenizerFile);
-    getStr("latent_stats", mStatsFile);
-    getStr("sigmas_file", mSigmasFile);
-    getInt("text_len", mTextLen);
-    getInt("drop_idx", mDropIdx);
-    if (doc.HasMember("rope_index_inputs") && doc["rope_index_inputs"].IsBool())
-        mRopeIndexInputs = doc["rope_index_inputs"].GetBool();
-    auto absPath = [&](std::string& v) {
-        if (!v.empty() && v[0] != '/') v = mModelPath + "/" + v;
-    };
-    absPath(mEmbeddingsFile);
-    absPath(mTokenizerFile);
-    absPath(mStatsFile);
+    mEmbeddingsFile = teRel(embeddingsRel);
+    mTokenizerFile  = teRel(tokenizerRel);
+    // latent_stats is relative to the model base dir (may carry a sub-path)
+    if (!mStatsFile.empty() && mStatsFile[0] != '/') mStatsFile = mModelPath + "/" + mStatsFile;
 }
 
 bool QwenImage21Diffusion::readFileBytes(const std::string& path, std::vector<uint8_t>& out) {
@@ -228,7 +246,7 @@ bool QwenImage21Diffusion::load() {
     std::shared_ptr<Executor::RuntimeManager> teRt = makeCpuRuntime();
     mVaeRt = makeCpuRuntime();
 
-    std::string teModelPath = mModelPath + "/" + mTeDir + "/" + mTeModelFile;
+    std::string teModelPath = mTeModelPath;
     {
         Module::Config tec;
         tec.shapeMutable = true;
@@ -257,7 +275,7 @@ bool QwenImage21Diffusion::ensureDiTLoaded() {
     if (mModules.size() < 3) mModules.resize(3);
     if (mModules[1]) return true;
     {
-        std::string ditPath = mModelPath + "/" + mDiTFile;
+        std::string ditPath = mDiTModelPath;
         Module::Config dc;
         dc.shapeMutable = true;
         if (mRopeIndexInputs) {
@@ -285,7 +303,7 @@ bool QwenImage21Diffusion::ensureVAELoaded() {
     if (mModules.size() < 3) mModules.resize(3);
     if (mModules[2]) return true;
     {
-        std::string vaePath = mModelPath + "/" + mVaeFile;
+        std::string vaePath = mVaeDecPath;
         Module::Config vc;
         vc.shapeMutable = true;
         mModules[2].reset(Module::load({"latent_sample"}, {"sample"}, vaePath.c_str(), mVaeRt, &vc));
