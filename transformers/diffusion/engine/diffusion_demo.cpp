@@ -37,7 +37,7 @@ int main(int argc, const char* argv[]) {
         MNN_PRINT("\n");
         MNN_PRINT("Required parameters:\n");
         MNN_PRINT("  resource_path    : Path to model directory\n");
-        MNN_PRINT("  model_type       : 0=SD1.5, 1=Taiyi, 2=Sana, 3=Wan2.1, 4=ZImage, 5=LongCat, 6=Flux2Klein, 7=QwenImage21\n");
+        MNN_PRINT("  model_type       : 0=SD1.5, 1=Taiyi, 2=Sana, 3=Wan2.1, 4=ZImage, 5=LongCat, 6=Flux2Klein, 7=QwenImage21, 8=Flux3Klein\n");
         MNN_PRINT("  memory_mode      : 0=low(load/unload on demand), 1=high(keep all in memory), 2=balance\n");
         MNN_PRINT("  backend_type     : 0=CPU, 3=OpenCL, 7=Vulkan, etc.\n");
         MNN_PRINT("  iteration_num    : Numbe of diffusion steps (e.g., 20, 50)\n");
@@ -217,6 +217,8 @@ int main(int argc, const char* argv[]) {
         MNN_PRINT("Model type is FLUX.2-Klein-4B diffusion model (Qwen3-4B + DiT)\n");
     } else if (model_type == QWEN_IMAGE_21_DIFFUSION) {
         MNN_PRINT("Model type is Qwen-Image-2.1 diffusion model (Qwen3-VL-7B + DiT-7B)\n");
+    } else if (model_type == FLUX3_KLEIN_DIFFUSION) {
+        MNN_PRINT("Model type is FLUX.3-Image-Klein diffusion model (Qwen3-VL-4B + DiT-5.6B, flow-map)\n");
     } else {
         MNN_PRINT("Error: Model type %d not supported, please check\n", (int)model_type);
         return 0;
@@ -273,7 +275,11 @@ int main(int argc, const char* argv[]) {
     auto progressDisplay = [](int progress) {
         std::cout << "Progress: " << progress << "%" << std::endl;
     };
-    diffusion->run(input_text, img_name, iteration_num, random_seed, cfgScale, progressDisplay, input_image_path);
+    bool ok = diffusion->run(input_text, img_name, iteration_num, random_seed, cfgScale, progressDisplay, input_image_path);
+    if (!ok) {
+        MNN_PRINT("[Demo] Diffusion run failed\n");
+        return 1;
+    }
      
     /*
      when need multi text-generation-image:
