@@ -25,6 +25,7 @@ class Flux2KleinDiffusion;
 #include "diffusion/zimage_diffusion.hpp"
 #include "diffusion/longcat_diffusion.hpp"
 #include "diffusion/flux2_klein_diffusion.hpp"
+#include "diffusion/flux3_klein_diffusion.hpp"
 #include "diffusion/qwenimage21_diffusion.hpp"
 
 #define MNN_OPEN_TIME_TRACE
@@ -266,6 +267,8 @@ Diffusion* Diffusion::createDiffusion(std::string modelPath, DiffusionModelType 
         return new Flux2KleinDiffusion(modelPath, modelType, backendType, memoryMode, 0, 0, true, false, GPU_MEMORY_AUTO, PRECISION_AUTO, CFG_MODE_AUTO, 4);
     } else if (modelType == QWEN_IMAGE_21_DIFFUSION) {
         return new QwenImage21Diffusion(modelPath, modelType, backendType, memoryMode, 0, 0, true, false, GPU_MEMORY_AUTO, PRECISION_AUTO, CFG_MODE_AUTO, 4);
+    } else if (modelType == FLUX3_KLEIN_DIFFUSION) {
+        return new Flux3KleinDiffusion(modelPath, modelType, backendType, memoryMode, 0, 0, true, false, GPU_MEMORY_AUTO, PRECISION_AUTO, CFG_MODE_AUTO, 4);
     } else {
         return new StableDiffusion(modelPath, modelType, backendType, memoryMode);
     }
@@ -280,6 +283,8 @@ Diffusion* Diffusion::createDiffusion(std::string modelPath, DiffusionModelType 
         return new Flux2KleinDiffusion(modelPath, modelType, backendType, memoryMode, imageWidth, imageHeight, textEncoderOnCPU, vaeOnCPU, gpuMemoryMode, precisionMode, cfgMode, numThreads);
     } else if (modelType == QWEN_IMAGE_21_DIFFUSION) {
         return new QwenImage21Diffusion(modelPath, modelType, backendType, memoryMode, imageWidth, imageHeight, textEncoderOnCPU, vaeOnCPU, gpuMemoryMode, precisionMode, cfgMode, numThreads);
+    } else if (modelType == FLUX3_KLEIN_DIFFUSION) {
+        return new Flux3KleinDiffusion(modelPath, modelType, backendType, memoryMode, imageWidth, imageHeight, textEncoderOnCPU, vaeOnCPU, gpuMemoryMode, precisionMode, cfgMode, numThreads);
     } else if (modelType == SANA_DIFFUSION) {
         return new SanaDiffusion(modelPath, modelType, backendType, memoryMode, imageWidth, imageHeight, textEncoderOnCPU, vaeOnCPU, gpuMemoryMode, precisionMode, cfgMode, numThreads);
     } else if (modelType == WAN2_1_T2V) {
