@@ -254,7 +254,10 @@ bool QwenImage21Diffusion::readFileBytes(const std::string& path, std::vector<ui
 bool QwenImage21Diffusion::load() {
     // Runtime hints (weight mmap) come from config.json via the Diffusion base ctor; they must
     // be in place before the module loads so static weights land in the mmap pool.
-    if (!initRuntimeManagers(true /*gpuBufferMode*/, 0)) {
+    // Flash attention (ATTENTION_OPTION=8) like the Flux2Klein engine: lets MNN run
+    // fused Attention ops without materializing the O(S^2) score matrix. Harmless if
+    // the graph has no fused Attention op.
+    if (!initRuntimeManagers(true /*gpuBufferMode*/, 8)) {
         return false;
     }
     mModules.resize(3);
