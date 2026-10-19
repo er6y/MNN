@@ -179,6 +179,7 @@ void QwenImage21Diffusion::readEngineConfig() {
     mTeModelPath  = cfg.text_encoder_model();
     mDiTModelPath = cfg.unet_model();
     mVaeDecPath   = cfg.vae_decoder_model();
+    mVaeEncPath   = cfg.vae_encoder_model();  // empty when the package has no encoder
 
     std::string teDir = "text_encoder";
     std::string embeddingsRel = "embeddings_bf16.bin";
@@ -514,6 +515,16 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
     };
     dumpF32("enc.f32", enc.data(), enc.size());
 
+    // img2img: encode the source image while only the text encoder is resident.
+    // Doing this after the DiT has been loaded makes the encoder's shapeMutable
+    // session interfere with the DiT session and the first denoise step reads
+    // garbage (striped output), so keep the ordering TE -> encoder -> DiT.
+    std::vector<float> i2iX0;
+    if (injDir == nullptr && !mPendingInputImage.empty()) {
+        if (!encodeImage(mPendingInputImage, i2iX0)) return false;
+        if (!mVaeEncPath.empty()) mModules[3].reset();  // encoder no longer needed
+    }
+
     // staged low-memory mode: TE weights are dead after textEncode (enc[] owns the output);
     // release them before the DiT loads so peak memory = max(TE, DiT), not the sum
     if (mMemoryMode == 0) {
@@ -560,17 +571,29 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
         dumpF32("lat0.f32", lat.data(), lat.size());
     }
 
-    // IMG2IMG (SDEdit): init from a reference image's normalized latents at
-    // sigmas[startStep], then run the tail of the schedule.
+    // IMG2IMG (SDEdit): init from a reference image's latents at sigmas[startStep],
+    // then run the tail of the schedule. The source comes from the input image
+    // (VAE encoder) when one was passed; MNN_Q21_INIT_LATENTS is the legacy
+    // pre-encoded .f32 path.
     const char* initPath = getenv("MNN_Q21_INIT_LATENTS");
     int startStep = getenv("MNN_Q21_START_STEP") ? atoi(getenv("MNN_Q21_START_STEP")) : 0;
-    if (injDir == nullptr && initPath != nullptr) {
-        std::vector<uint8_t> ib;
-        if (!readFileBytes(initPath, ib) || ib.size() < lat.size() * 4) {
-            MNN_ERROR("[QwenImage21] init latents short: %s\n", initPath);
-            return false;
+    const bool useImage = !i2iX0.empty();
+    if (useImage) {
+        if (startStep <= 0) startStep = mI2iStartStep;
+        MNN_PRINT("[QwenImage21] img2img: SDEdit from step %d\n", startStep);
+    }
+    if (injDir == nullptr && (initPath != nullptr || useImage)) {
+        std::vector<float> x0;
+        if (useImage) {
+            x0 = i2iX0;
+        } else {
+            std::vector<uint8_t> ib;
+            if (!readFileBytes(initPath, ib) || ib.size() < lat.size() * 4) {
+                MNN_ERROR("[QwenImage21] init latents short: %s\n", initPath);
+                return false;
+            }
+            x0.assign((float*)ib.data(), (float*)ib.data() + lat.size());
         }
-        std::vector<float> x0((float*)ib.data(), (float*)ib.data() + lat.size());
         std::vector<float> inoise((size_t)ch * latentW * latentH);
         torchCpuRandn(inoise.data(), inoise.size(), (uint64_t)randomSeed);
         if (startStep < 0 || startStep >= steps) startStep = 0;
@@ -617,7 +640,7 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
             for (int q = 0; q < seq; q++) tp[q] = (q >= mTextLen) ? 1.0f : 0.0f;
         }
     }
-    int s0 = (initPath != nullptr) ? startStep : 0; /* IMG2IMG */
+    int s0 = (initPath != nullptr || useImage) ? startStep : 0; /* IMG2IMG */
     for (int s = s0; s < steps; s++) {
         VARP hs = _Input({1, imgSeq, ch}, NCHW, halide_type_of<float>());
         memcpy(hs->writeMap<float>(), lat.data(), sizeof(float) * lat.size());
@@ -712,6 +735,117 @@ bool QwenImage21Diffusion::run(const std::string prompt, const std::string outpu
         MNN_ERROR("[QwenImage21] imwrite failed: %s\n", outputPath.c_str());
     if (progressCallback) progressCallback(100);
     return ok;
+}
+
+bool QwenImage21Diffusion::run(const std::string prompt, const std::string outputPath, int iterNum,
+                               int randomSeed, float cfgScale,
+                               std::function<void(int)> progressCallback,
+                               const std::string inputImagePath) {
+    // img2img path: hand the image to the 5-arg run via mPendingInputImage
+    mPendingInputImage = inputImagePath;
+    bool ok = run(prompt, outputPath, iterNum, randomSeed, progressCallback);
+    mPendingInputImage.clear();
+    return ok;
+}
+
+bool QwenImage21Diffusion::encodeImage(const std::string& imagePath, std::vector<float>& latOut) {
+    using namespace MNN::CV;
+    if (mVaeEncPath.empty()) {
+        MNN_ERROR("[QwenImage21] img2img needs a VAE encoder (vae.encoder_model missing)\n");
+        return false;
+    }
+    auto raw = imread(imagePath);
+    if (!raw.get()) {
+        MNN_ERROR("[QwenImage21] cannot read input image: %s\n", imagePath.c_str());
+        return false;
+    }
+    auto info = raw->getInfo();
+    const int tgtW = mImageWidth  > 0 ? mImageWidth  : 512;
+    const int tgtH = mImageHeight > 0 ? mImageHeight : 512;
+    MNN_PRINT("[QwenImage21] img2img source %dx%d -> %dx%d\n",
+              info->dim[1], info->dim[0], tgtW, tgtH);
+    auto cropped = resizeAndCenterCrop(raw, tgtW, tgtH);
+    auto rgb = bgrToRgb(cropped);
+    if (!rgb.get()) {
+        MNN_ERROR("[QwenImage21] image preprocessing failed\n");
+        return false;
+    }
+    const int W = tgtW, H = tgtH;
+    auto src = rgb->readMap<uint8_t>();
+    // VAE input is 5D RGBA [1,4,1,H,W], pixels in [-1,1], alpha = 1
+    VARP inp = _Input({1, 4, 1, H, W}, NCHW, halide_type_of<float>());
+    auto dst = inp->writeMap<float>();
+    for (int c = 0; c < 3; c++)
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+                dst[((size_t)c * H + y) * W + x] =
+                    (float)src[((size_t)y * W + x) * 3 + c] / 127.5f - 1.0f;
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++)
+            dst[((size_t)3 * H + y) * W + x] = 1.0f;
+
+    if (mModules.size() < 4) mModules.resize(4);
+    if (!mModules[3]) {
+        Module::Config mc;
+        mc.shapeMutable = true;
+        std::shared_ptr<Executor::RuntimeManager> rt = mVaeRt ? mVaeRt : runtime_manager_;
+        mModules[3].reset(Module::load({"sample"}, {"latent"}, mVaeEncPath.c_str(), rt, &mc));
+        if (!mModules[3]) {
+            MNN_ERROR("[QwenImage21] failed to load VAE encoder: %s\n", mVaeEncPath.c_str());
+            return false;
+        }
+        mModules[3]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
+    }
+    auto enc = mModules[3]->onForward({inp});
+    if (enc.empty() || enc[0].get() == nullptr) {
+        MNN_ERROR("[QwenImage21] VAE encode failed\n");
+        return false;
+    }
+    // MNN may hand back NC4HW4-packed data; force plain NCHW before reading it.
+    auto encN = _Convert(enc[0], NCHW);
+    encN->readMap<float>();
+    auto oinfo = encN->getInfo();
+    const int ch = 64;
+    const int latW = tgtW / 16, latH = tgtH / 16;
+    {
+        std::string dims;
+        for (int i = 0; i < (int)oinfo->dim.size(); i++)
+            dims += std::to_string(oinfo->dim[i]) + (i + 1 < (int)oinfo->dim.size() ? "x" : "");
+        auto tp = encN->readMap<float>();
+        float mn = 1e9f, mx = -1e9f;
+        size_t n = (size_t)1;
+        for (int i = 0; i < (int)oinfo->dim.size(); i++) n *= oinfo->dim[i];
+        for (size_t i = 0; i < n; i++) { mn = std::min(mn, tp[i]); mx = std::max(mx, tp[i]); }
+        MNN_PRINT("[QwenImage21] encoder out [%s] range [%.3f, %.3f]\n", dims.c_str(), mn, mx);
+    }
+    if ((int)oinfo->dim.size() != 5 || oinfo->dim[1] != ch) {
+        MNN_ERROR("[QwenImage21] unexpected encoder output rank/shape\n");
+        return false;
+    }
+    auto ep = encN->readMap<float>();
+    // [1,64,1,latH,latW] -> (y*latW+x)*64+c, then normalize (x-mean)/std
+    latOut.assign((size_t)latW * latH * ch, 0.0f);
+    for (int c = 0; c < ch; c++) {
+        const float mean = kLatentStats[c];
+        const float std  = kLatentStats[ch + c];
+        for (int y = 0; y < latH; y++)
+            for (int x = 0; x < latW; x++)
+                latOut[((size_t)y * latW + x) * ch + c] =
+                    (((size_t)c * latH + y) * latW + x < (size_t)ch * latH * latW)
+                        ? (ep[((size_t)c * latH + y) * latW + x] - mean) / std
+                        : 0.0f;
+    }
+    // Keep the encoder module alive: resetting it here frees the module session
+    // while the VARP graph that produced `encN` still references its buffers, and
+    // the following DiT forward then reads corrupted memory (striped output).
+    MNN_PRINT("[QwenImage21] img2img: encoded %dx%d latent\n", latW, latH);
+    if (getenv("MNN_Q21_DUMP") != nullptr) {
+        std::string dp = std::string(getenv("MNN_Q21_DUMP")) + "/img_lat.f32";
+        std::ofstream df(dp, std::ios::binary);
+        df.write((const char*)latOut.data(), (std::streamsize)(latOut.size() * 4));
+        MNN_PRINT("[QwenImage21] dumped %s (%zu floats)\n", dp.c_str(), latOut.size());
+    }
+    return true;
 }
 
 bool QwenImage21Diffusion::run(const VARP input_embeds, const std::string& mode,

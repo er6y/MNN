@@ -30,6 +30,10 @@ public:
     bool load() override;
     bool run(const std::string prompt, const std::string outputPath, int iterNum, int randomSeed,
              std::function<void(int)> progressCallback) override;
+    // Extended entry: a non-empty inputImagePath switches to img2img (SDEdit).
+    bool run(const std::string prompt, const std::string outputPath, int iterNum, int randomSeed,
+             float cfgScale, std::function<void(int)> progressCallback,
+             const std::string inputImagePath = "") override;
     // Sana-style interface: embeds ignored, delegates to the prompt run.
     bool run(const VARP input_embeds, const std::string& mode, const std::string& inputImagePath,
              const std::string& outputImagePath, int width, int height, int iterNum, int randomSeed,
@@ -43,6 +47,8 @@ private:
     // low-memory staged loading (memory_mode==0): DiT/VAE load on demand
     bool ensureDiTLoaded();
     bool ensureVAELoaded();
+    // img2img: source image -> normalized latents in (y*W+x)*ch+c layout
+    bool encodeImage(const std::string& imagePath, std::vector<float>& latOut);
 
 #ifdef MNN_BUILD_LLM
     std::unique_ptr<MNN::Transformer::Tokenizer> mTokenizer;
@@ -60,6 +66,9 @@ private:
     std::string mTokenizerFile;
     std::string mDiTModelPath;
     std::string mVaeDecPath;
+    std::string mVaeEncPath;
+    std::string mPendingInputImage;   // set by the 7-arg run() for img2img
+    int mI2iStartStep = 4;            // SDEdit start step when no MNN_Q21_START_STEP
     // json-first overrides of the embedded fallbacks (same design as Flux's
     // scheduler_config.json / vae.bn_mean/bn_std): "sigmas" table and
     // "vae"."latent_stats" array; empty means use the embedded constants.
