@@ -71,6 +71,17 @@ public:
         }
         return base_dir_ + "unet.mnn";
     }
+
+    // Image-edit transformer (image_cond variant). Empty when the package has none.
+    std::string unet_edit_model() const {
+        if (!config_loaded_) return "";
+        if (config_.HasMember("transformer") && config_["transformer"].IsObject()) {
+            const auto& t = config_["transformer"];
+            if (t.HasMember("edit_model") && t["edit_model"].IsString())
+                return base_dir_ + t["edit_model"].GetString();
+        }
+        return "";
+    }
     
     std::string vae_decoder_model() const {
         if (!config_loaded_) return base_dir_ + "vae_decoder.mnn";
