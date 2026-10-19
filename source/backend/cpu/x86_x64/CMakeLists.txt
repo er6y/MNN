@@ -46,8 +46,15 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(X86_64)|(x64)|(X64)|(amd64)|(AMD64)
     FILE(GLOB MNN_AVX_SRC ${CMAKE_CURRENT_LIST_DIR}/avx/*)
     FILE(GLOB MNN_AVXFMA_SRC ${CMAKE_CURRENT_LIST_DIR}/avxfma/*)
     message(STATUS "MNN_AVX512:${MNN_AVX512}")
-    if (MNN_AVX512 AND ((NOT MSVC) OR WIN_USE_ASM))
+    if (MNN_AVX512)
         FILE(GLOB MNN_AVX512_SRC ${CMAKE_CURRENT_LIST_DIR}/avx512/*)
+        if (MSVC AND NOT WIN_USE_ASM)
+            # No GNU assembler (MNN_ASSEMBLER) on this host: drop the hand-written
+            # AT&T .S kernels and keep the C++ intrinsics ones. Without this the
+            # whole avx512 directory was skipped and int4/int8 ran on the slow path.
+            list(FILTER MNN_AVX512_SRC EXCLUDE REGEX "[.]S$")
+            list(FILTER MNN_AVX512_SRC EXCLUDE REGEX "[.]s$")
+        endif()
         SET(MNNAVX512_VNNI_SRC ${CMAKE_CURRENT_LIST_DIR}/avx512/GemmInt8_VNNI.cpp)
         LIST(REMOVE_ITEM MNN_AVX512_SRC ${MNNAVX512_VNNI_SRC})
         process_asm(MNNAVX512 MNN_AVX512_SRC)
@@ -64,7 +71,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(X86_64)|(x64)|(X64)|(amd64)|(AMD64)
             target_compile_options(MNNAVX512_VNNI PRIVATE -DMNN_USE_SSE)
             target_compile_options(MNNAVX512_VNNI PRIVATE -DMNN_AVX512_VNNI)
             if (MSVC)
-                target_compile_options(MNNAVX512 PRIVATE /arch:AVX512)
+                # upstream bug: the flag was applied to MNNAVX512 instead of the VNNI
+                # target, so GemmInt8_VNNI.cpp was compiled without AVX512 (C1001).
+                # /O1 is required: MSVC 19.29 (VS2019) hits an internal compiler error
+                # (C1001) at /O2 on this file; /O1 still vectorizes the intrinsics.
+                target_compile_options(MNNAVX512_VNNI PRIVATE /arch:AVX512 /Od)
             else()
                 target_compile_options(MNNAVX512_VNNI PRIVATE -m64 -mavx512f -mavx512dq -mavx512vl -mavx512bw -mfma -mavx512vnni)
             endif()
