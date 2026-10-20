@@ -150,24 +150,26 @@ Flux3KleinDiffusion::Flux3KleinDiffusion(
             MNN_PRINT("[Flux3Klein] Warning: VAE BN params not found in config.json\n");
     }
 
-    // Must align to 16: VAE scale=8 then patchify /2
-    if (mConfigImageWidth > 0 && mConfigImageHeight > 0) {
-        // static per-size export: the package config wins over the runtime request
-        mImageWidth  = ((mConfigImageWidth  + 15) / 16) * 16;
-        mImageHeight = ((mConfigImageHeight + 15) / 16) * 16;
-        if (mImageWidth  < 256) mImageWidth  = 256;
-        if (mImageHeight < 256) mImageHeight = 256;
-        if ((imageWidth > 0 && mImageWidth != imageWidth) || (imageHeight > 0 && mImageHeight != imageHeight))
-            MNN_PRINT("[Flux3Klein] Runtime size request %dx%d overridden by config inference size %dx%d (static export)\n",
-                      imageWidth, imageHeight, mImageWidth, mImageHeight);
-    } else if (imageWidth > 0 && imageHeight > 0) {
-        mImageWidth  = ((imageWidth  + 15) / 16) * 16;
-        mImageHeight = ((imageHeight + 15) / 16) * 16;
-        if (mImageWidth  < 256) mImageWidth  = 256;
-        if (mImageHeight < 256) mImageHeight = 256;
+    // The DiT is exported with a dynamic image sequence, so any size the caller
+    // asks for is valid. config.json inference.width/height is only the default
+    // used when the request does not carry a size.
+    if (imageWidth > 0 && imageHeight > 0) {
+        mImageWidth  = imageWidth;
+        mImageHeight = imageHeight;
+        MNN_PRINT("[Flux3Klein] runtime size %dx%d\n", mImageWidth, mImageHeight);
+    } else if (mConfigImageWidth > 0 && mConfigImageHeight > 0) {
+        mImageWidth  = mConfigImageWidth;
+        mImageHeight = mConfigImageHeight;
+        MNN_PRINT("[Flux3Klein] default size from config: %dx%d\n", mImageWidth, mImageHeight);
     } else {
-        mImageWidth = 512; mImageHeight = 512;
+        mImageWidth = 1024; mImageHeight = 1024;
+        MNN_PRINT("[Flux3Klein] no size given, fallback 1024x1024\n");
     }
+    // Must align to 16: VAE scale=8 then patchify /2
+    mImageWidth  = ((mImageWidth  + 15) / 16) * 16;
+    mImageHeight = ((mImageHeight + 15) / 16) * 16;
+    if (mImageWidth  < 256) mImageWidth  = 256;
+    if (mImageHeight < 256) mImageHeight = 256;
     mLatentH = mImageHeight / 8;
     mLatentW = mImageWidth  / 8;
     MNN_PRINT("[Flux3Klein] image=%dx%d latent=%dx%d packed_seq=%d\n",
@@ -446,7 +448,6 @@ VARP Flux3KleinDiffusion::vae_encoder(VARP image) {
         MNN_PRINT("[Flux3Klein] Load VAE encoder on demand: %s\n", path.c_str());
         auto& vae_runtime = runtime_manager_vae_cpu_ ? runtime_manager_vae_cpu_ : runtime_manager_;
         mModules[3].reset(Module::load({"sample"},{"latent_sample"}, path.c_str(), vae_runtime, &mc));
-        if (mModules[3]) mModules[3]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
         if (!mModules[3]) { MNN_PRINT("[Flux3Klein] Failed to load VAE encoder\n"); return nullptr; }
     }
     AUTOTIME;

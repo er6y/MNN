@@ -7,6 +7,7 @@
 //
 
 #include <float.h>
+#include "../SoftmaxScalar.hpp"
 #include <string.h>
 #include <algorithm>
 #include <limits>
@@ -1066,6 +1067,13 @@ static void _AVX512_MNNAdjustOptimalSparseKernel(int& sparseBlockOC, MNN::CoreFu
 
 static void _AVX512_MNNSoftmax(float* softmaxDst, const float* softmaxSrc, float* runningMax, float* runningSum, float* updateScale, int outside, int reduceSize, int kvSeqOffset, int validOffset, int pack, bool mask) {
     const int packUnit = 16;
+    if (pack != packUnit) {
+        // Packed layout is narrower than the vector width: the SIMD loop
+        // below would read a full vector per packed group and overflow.
+        MNN::MNNSoftmaxScalar(softmaxDst, softmaxSrc, runningMax, runningSum, updateScale,
+                              outside, reduceSize, kvSeqOffset, validOffset, pack, mask);
+        return;
+    }
     int reduceSizeOuter = 1;
     int reduceSizeInner = reduceSize;
     int stride0         = packUnit;

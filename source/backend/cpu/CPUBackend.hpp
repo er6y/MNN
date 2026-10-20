@@ -88,7 +88,9 @@ struct MatmulRelatedFunctions;
 
 class CPUMemObj : public Backend::MemObj {
 public:
-    CPUMemObj(BufferAllocator* allocator, MemChunk chunk, int size) : mAllocator(allocator), mChunk(chunk), mSize(size) {}
+    // size must stay size_t: tensors over 2GiB truncate to a negative int,
+    // which breaks the buffer-reuse size check in allocBuffer.
+    CPUMemObj(BufferAllocator* allocator, MemChunk chunk, size_t size) : mAllocator(allocator), mChunk(chunk), mSize(size) {}
     virtual ~ CPUMemObj() {
         if (mAllocator) {
             mAllocator->free(mChunk);
@@ -97,12 +99,12 @@ public:
     virtual MemChunk chunk() {
         return mChunk;
     }
-    inline int getSize() const { return mSize; }
+    inline size_t getSize() const { return mSize; }
 
 private:
     BufferAllocator* mAllocator;
     MemChunk mChunk;
-    int mSize;
+    size_t mSize;
 };
 class CPUBackend : public Backend {
 public:

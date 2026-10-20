@@ -137,34 +137,34 @@ void CPURaster::executeFaster(const std::vector<Tensor *> &inputs, const std::ve
             }
             auto& slice = iter.second;
             //Offset use byte
-            auto srcPtr = iter.first->host<uint8_t>() + slice.src.offset * bytes;
-            auto dstPtr = output->host<uint8_t>() + slice.dst.offset * bytes;
+            auto srcPtr = iter.first->host<uint8_t>() + (size_t)slice.src.offset * bytes;
+            auto dstPtr = output->host<uint8_t>() + (size_t)slice.dst.offset * bytes;
             if (slice.src.stride[1] == slice.size[2] && slice.dst.stride[1] == slice.size[2] && slice.src.stride[2] == 1) {
                 for (int z=0; z<slice.size[0]; ++z) {
-                    auto srcZ = srcPtr + z * slice.src.stride[0] * byteC4;
-                    auto dstZ = dstPtr + z * slice.dst.stride[0] * byteC4;
-                    ::memcpy(dstZ, srcZ, slice.size[1] * slice.src.stride[1] * byteC4);
+                    auto srcZ = srcPtr + (size_t)z * slice.src.stride[0] * byteC4;
+                    auto dstZ = dstPtr + (size_t)z * slice.dst.stride[0] * byteC4;
+                    ::memcpy(dstZ, srcZ, (size_t)slice.size[1] * slice.src.stride[1] * byteC4);
                 }
                 continue;
             }
             if (1 == slice.src.stride[2] && 1 == slice.dst.stride[2]) {
                 for (int z=0; z<slice.size[0]; ++z) {
-                    auto srcZ = srcPtr + z * slice.src.stride[0] * byteC4;
-                    auto dstZ = dstPtr + z * slice.dst.stride[0] * byteC4;
+                    auto srcZ = srcPtr + (size_t)z * slice.src.stride[0] * byteC4;
+                    auto dstZ = dstPtr + (size_t)z * slice.dst.stride[0] * byteC4;
                     for (int y=0; y<slice.size[1]; ++y) {
-                        auto srcY = srcZ + y * slice.src.stride[1] * byteC4;
-                        auto dstY = dstZ + y * slice.dst.stride[1] * byteC4;
+                        auto srcY = srcZ + (size_t)y * slice.src.stride[1] * byteC4;
+                        auto dstY = dstZ + (size_t)y * slice.dst.stride[1] * byteC4;
                         ::memcpy(dstY, srcY, slice.size[2] * byteC4);
                     }
                 }
                 continue;
             }
             for (int z=0; z<slice.size[0]; ++z) {
-                auto srcZ = srcPtr + z * slice.src.stride[0] * byteC4;
-                auto dstZ = dstPtr + z * slice.dst.stride[0] * byteC4;
+                auto srcZ = srcPtr + (size_t)z * slice.src.stride[0] * byteC4;
+                auto dstZ = dstPtr + (size_t)z * slice.dst.stride[0] * byteC4;
                 for (int y=0; y<slice.size[1]; ++y) {
-                    auto srcY = srcZ + y * slice.src.stride[1] * byteC4;
-                    auto dstY = dstZ + y * slice.dst.stride[1] * byteC4;
+                    auto srcY = srcZ + (size_t)y * slice.src.stride[1] * byteC4;
+                    auto dstY = dstZ + (size_t)y * slice.dst.stride[1] * byteC4;
                     C4proc(dstY, srcY, slice.size[2], slice.src.stride[2], slice.dst.stride[2]);
                 }
             }
@@ -205,9 +205,9 @@ static BlitProc _selectUnitProc(int bytes, int stride, int ds) {
 }
 static void _zero(const Tensor::InsideDescribe::Region& slice, int bytes, uint8_t* dstPtr) {
     for (int z=0; z<slice.size[0]; ++z) {
-        auto dstZ = dstPtr + (z) * slice.dst.stride[0] * bytes;
+        auto dstZ = dstPtr + (size_t)(z) * slice.dst.stride[0] * bytes;
         for (int y=0; y<slice.size[1]; ++y) {
-            auto dstY = dstZ + y * slice.dst.stride[1] * bytes;
+            auto dstY = dstZ + (size_t)y * slice.dst.stride[1] * bytes;
             ::memset(dstY, 0, slice.size[2] * bytes);
         }
     }
@@ -223,9 +223,9 @@ static bool _reduceblit(const Tensor::InsideDescribe::Region& slice, int bytes, 
             float summer = 0.0f;
             float fp32Buffer[1];
             for (int z=0; z<slice.size[0]; ++z) {
-                auto srcZ = srcPtr + z * slice.src.stride[0] * bytes;
+                auto srcZ = srcPtr + (size_t)z * slice.src.stride[0] * bytes;
                 for (int y=0; y<slice.size[1]; ++y) {
-                    auto srcY = srcZ + y * slice.src.stride[1] * bytes;
+                    auto srcY = srcZ + (size_t)y * slice.src.stride[1] * bytes;
                     for (int x=0; x<slice.size[2]; ++x) {
                         auto S = (float*)srcY;
                         if (bytes == 2) {
@@ -257,10 +257,10 @@ static bool _reduceblit(const Tensor::InsideDescribe::Region& slice, int bytes, 
             int dstStrideX = slice.dst.stride[reduceIndex[1]];
             for (int z=0; z<sizeZ; ++z) {
                 float summer = 0.0f;
-                auto srcZ = srcPtr + z * srcStrideZ * bytes;
-                auto dstZ = dstPtr + z * dstStrideZ * bytes;
+                auto srcZ = srcPtr + (size_t)z * srcStrideZ * bytes;
+                auto dstZ = dstPtr + (size_t)z * dstStrideZ * bytes;
                 for (int y=0; y<sizeY; ++y) {
-                    auto srcY = srcZ + y * srcStrideY * bytes;
+                    auto srcY = srcZ + (size_t)y * srcStrideY * bytes;
                     for (int x=0; x<sizeX; ++x) {
                         auto S = (float*)srcY;
                         if (bytes == 2) {
@@ -291,12 +291,12 @@ static bool _reduceblit(const Tensor::InsideDescribe::Region& slice, int bytes, 
             int dstStrideX = slice.dst.stride[reduceIndex[0]];
             std::vector<float> fp32Buffer(sizeX);
             for (int z=0; z<sizeZ; ++z) {
-                auto srcZ = srcPtr + z * srcStrideZ * bytes;
-                auto dstZ = dstPtr + z * dstStrideZ * bytes;
+                auto srcZ = srcPtr + (size_t)z * srcStrideZ * bytes;
+                auto dstZ = dstPtr + (size_t)z * dstStrideZ * bytes;
                 for (int y=0; y<sizeY; ++y) {
                     float summer = 0.0f;
-                    auto srcY = srcZ + y * srcStrideY * bytes;
-                    auto dstY = dstZ + y * dstStrideY * bytes;
+                    auto srcY = srcZ + (size_t)y * srcStrideY * bytes;
+                    auto dstY = dstZ + (size_t)y * dstStrideY * bytes;
                     float* S = (float*)srcY;
                     float* D = (float*)dstY;
                     if (bytes == 2) {
@@ -330,12 +330,12 @@ static void _blit(const Tensor::InsideDescribe::Region& slice, int bytes, const 
     }
     if (slice.src.stride[1] == slice.size[2] && slice.dst.stride[1] == slice.size[2] && slice.src.stride[2] == 1) {
         for (int z=0; z<slice.size[0]; ++z) {
-            auto srcZ = srcPtr + z * slice.src.stride[0] * bytes;
-            auto dstZ = dstPtr + z * slice.dst.stride[0] * bytes;
+            auto srcZ = srcPtr + (size_t)z * slice.src.stride[0] * bytes;
+            auto dstZ = dstPtr + (size_t)z * slice.dst.stride[0] * bytes;
 #ifdef DEBUG
             ::memset(dstZ, 0, slice.size[1] * slice.src.stride[1] * bytes);
 #endif
-            ::memcpy(dstZ, srcZ, slice.size[1] * slice.src.stride[1] * bytes);
+            ::memcpy(dstZ, srcZ, (size_t)slice.size[1] * slice.src.stride[1] * bytes);
         }
         return;
     }
@@ -347,11 +347,11 @@ static void _blit(const Tensor::InsideDescribe::Region& slice, int bytes, const 
     }
     if (1 == slice.src.stride[2] && 1 == slice.dst.stride[2]) {
         for (int z=0; z<slice.size[0]; ++z) {
-            auto srcZ = srcPtr + z * slice.src.stride[0] * bytes;
-            auto dstZ = dstPtr + z * slice.dst.stride[0] * bytes;
+            auto srcZ = srcPtr + (size_t)z * slice.src.stride[0] * bytes;
+            auto dstZ = dstPtr + (size_t)z * slice.dst.stride[0] * bytes;
             for (int y=0; y<slice.size[1]; ++y) {
-                auto srcY = srcZ + y * slice.src.stride[1] * bytes;
-                auto dstY = dstZ + y * slice.dst.stride[1] * bytes;
+                auto srcY = srcZ + (size_t)y * slice.src.stride[1] * bytes;
+                auto dstY = dstZ + (size_t)y * slice.dst.stride[1] * bytes;
 #ifdef DEBUG
                 ::memset(dstY, 0, slice.size[2] * bytes);
 #endif
@@ -361,11 +361,11 @@ static void _blit(const Tensor::InsideDescribe::Region& slice, int bytes, const 
         return;
     }
     for (int z=0; z<slice.size[0]; ++z) {
-        auto srcZ = srcPtr + z * slice.src.stride[0] * bytes;
-        auto dstZ = dstPtr + z * slice.dst.stride[0] * bytes;
+        auto srcZ = srcPtr + (size_t)z * slice.src.stride[0] * bytes;
+        auto dstZ = dstPtr + (size_t)z * slice.dst.stride[0] * bytes;
         for (int y=0; y<slice.size[1]; ++y) {
-            auto srcY = srcZ + y * slice.src.stride[1] * bytes;
-            auto dstY = dstZ + y * slice.dst.stride[1] * bytes;
+            auto srcY = srcZ + (size_t)y * slice.src.stride[1] * bytes;
+            auto dstY = dstZ + (size_t)y * slice.dst.stride[1] * bytes;
             proc(dstY, srcY, slice.size[2], slice.src.stride[2], slice.dst.stride[2]);
         }
     }
@@ -462,8 +462,8 @@ ErrorCode CPURaster::onResize(const std::vector<Tensor *> &____inputs, const std
             auto sourceFormat = TensorUtils::getDescribe(realInput)->dimensionFormat;
             auto destFormat = TensorUtils::getDescribe(output)->dimensionFormat;
             auto channelC4 = UP_DIV(srcChannel, core->pack);
-            auto batchStrideC4 = channelC4 * core->pack * srcArea * bytes;
-            auto batchStride = srcChannel * srcArea * bytes;
+            auto batchStrideC4 = (size_t)channelC4 * core->pack * srcArea * bytes;
+            auto batchStride = (size_t)srcChannel * srcArea * bytes;
             auto inputBatchStride = batchStride;
             auto outputBatchStride = batchStride;
             if (MNN_DATA_FORMAT_NC4HW4 == sourceFormat) {
@@ -699,8 +699,8 @@ ErrorCode CPURaster::onResize(const std::vector<Tensor *> &____inputs, const std
                 // Avoid crash when has zero shape input blit
                 continue;
             }
-            auto srcPtr = iter.first->host<uint8_t>() + slice.src.offset * bytes;
-            auto dstPtr = (uint8_t*)mOutputPtr + slice.dst.offset * bytes;
+            auto srcPtr = iter.first->host<uint8_t>() + (size_t)slice.src.offset * bytes;
+            auto dstPtr = (uint8_t*)mOutputPtr + (size_t)slice.dst.offset * bytes;
             _blit(slice, (int)bytes, srcPtr, dstPtr, mHasReduce, core->MNNLowpToFp32, core->MNNFp32ToLowp);
         }
     }, threadNum));
@@ -948,13 +948,13 @@ public:
                 for (; iter<loopNumber; ++iter) {
                     auto srcIter = *(iter1 + iter1Stride * iter);
                     auto dstIter = *(iter0 + iter0Stride * iter);
-                    auto srcOffset = srcIter * step1 + srcView->offset();
-                    auto dstOffset = dstIter * step0 + dstView->offset();
-                    if (dstOffset >= 0 && dstOffset < outputSize) {
-                        if (srcOffset >= 0 && srcOffset < inputSize) {
-                            _blit(reg, bytes, input->host<uint8_t>() + bytes * srcOffset, output->host<uint8_t>() + bytes * dstOffset, false);
+                    int64_t srcOffset = (int64_t)srcIter * step1 + srcView->offset();
+                    int64_t dstOffset = (int64_t)dstIter * step0 + dstView->offset();
+                    if (dstOffset >= 0 && dstOffset < (int64_t)outputSize) {
+                        if (srcOffset >= 0 && srcOffset < (int64_t)inputSize) {
+                            _blit(reg, bytes, input->host<uint8_t>() + (size_t)bytes * srcOffset, output->host<uint8_t>() + (size_t)bytes * dstOffset, false);
                         } else {
-                            _zero(reg, bytes, output->host<uint8_t>() + bytes * dstOffset);
+                            _zero(reg, bytes, output->host<uint8_t>() + (size_t)bytes * dstOffset);
                         }
                     }
                 }
@@ -995,8 +995,10 @@ public:
                         offset = mStack[iterIndex]->host<int32_t>()[iter];
                     }
                     auto view = cmd->view()->GetAs<View>(v);
-                    offset = offset * cmd->steps()->data()[v] + view->offset();
-                    mContainer[tId].stackPtr[tensorIndex] = tensor->host<uint8_t>() + offset * bytes;
+                    // steps * batch for big tensors (e.g. >2GiB attention probs) can
+                    // exceed INT32 range: compute the byte offset in 64-bit.
+                    int64_t byteOffset = (int64_t)offset * cmd->steps()->data()[v] + view->offset();
+                    mContainer[tId].stackPtr[tensorIndex] = tensor->host<uint8_t>() + (size_t)byteOffset * bytes;
                     MNN_ASSERT(nullptr != tensor->host<uint8_t>());
                 }
                 auto dstOrigin = (uint8_t*)mContainer[tId].stackPtr[cmd->indexes()->data()[0]];
@@ -1025,11 +1027,11 @@ public:
                         auto lastS = cmd->size()->data()[2];
                         if (lastS == 1 || cmd->view()->GetAs<View>(1)->stride()->data()[2] == 1) {
                             for (int z=0; z<cmd->size()->data()[0]; ++z) {
-                                auto srcZ = src + z * cmd->view()->GetAs<View>(1)->stride()->data()[0] * bytes;
-                                auto dstZ = dst + z * outputStride[0] * bytes;
+                                auto srcZ = src + (size_t)z * cmd->view()->GetAs<View>(1)->stride()->data()[0] * bytes;
+                                auto dstZ = dst + (size_t)z * outputStride[0] * bytes;
                                 for (int y=0; y<cmd->size()->data()[1]; ++y) {
-                                    auto srcY = srcZ + y * cmd->view()->GetAs<View>(1)->stride()->data()[1] * bytes;
-                                    auto dstY = dstZ + y * outputStride[1] * bytes;
+                                    auto srcY = srcZ + (size_t)y * cmd->view()->GetAs<View>(1)->stride()->data()[1] * bytes;
+                                    auto dstY = dstZ + (size_t)y * outputStride[1] * bytes;
                                     proc(dstY, srcY, lastS);
                                 }
                             }
@@ -1037,11 +1039,11 @@ public:
                             // Blit to cache
                             auto srcCache = mCacheBuffer.ptr() + mMaxCacheSize * tId;
                             for (int z=0; z<cmd->size()->data()[0]; ++z) {
-                                auto srcZ = src + z * cmd->view()->GetAs<View>(1)->stride()->data()[0] * bytes;
-                                auto dstZ = dst + z * outputStride[0] * bytes;
+                                auto srcZ = src + (size_t)z * cmd->view()->GetAs<View>(1)->stride()->data()[0] * bytes;
+                                auto dstZ = dst + (size_t)z * outputStride[0] * bytes;
                                 for (int y=0; y<cmd->size()->data()[1]; ++y) {
-                                    auto srcY = srcZ + y * cmd->view()->GetAs<View>(1)->stride()->data()[1] * bytes;
-                                    auto dstY = dstZ + y * outputStride[1] * bytes;
+                                    auto srcY = srcZ + (size_t)y * cmd->view()->GetAs<View>(1)->stride()->data()[1] * bytes;
+                                    auto dstY = dstZ + (size_t)y * outputStride[1] * bytes;
                                     blit(srcCache, srcY, lastS, cmd->view()->GetAs<View>(1)->stride()->data()[2], 1);
                                     proc(dstY, srcCache, lastS);
                                 }
@@ -1091,13 +1093,13 @@ public:
                                 needBroadcastIndex = 1;
                             }
                             for (int z=0; z<cmd->size()->data()[0]; ++z) {
-                                auto src0Z = src0 + z * stride1[0] * bytes;
-                                auto src1Z = src1 + z * stride2[0] * bytes;
-                                auto dstZ = dst + z * stride0[0] * bytes;
+                                auto src0Z = src0 + (size_t)z * stride1[0] * bytes;
+                                auto src1Z = src1 + (size_t)z * stride2[0] * bytes;
+                                auto dstZ = dst + (size_t)z * stride0[0] * bytes;
                                 for (int y=0; y<cmd->size()->data()[1]; ++y) {
-                                    auto src0Y = src0Z + y * stride1[1] * bytes;
-                                    auto src1Y = src1Z + y * stride2[1] * bytes;
-                                    auto dstY = dstZ + y * stride0[1] * bytes;
+                                    auto src0Y = src0Z + (size_t)y * stride1[1] * bytes;
+                                    auto src1Y = src1Z + (size_t)y * stride2[1] * bytes;
+                                    auto dstY = dstZ + (size_t)y * stride0[1] * bytes;
                                     proc(dstY, src0Y, src1Y, cmd->size()->data()[2], needBroadcastIndex);
                                 }
                             }
@@ -1105,13 +1107,13 @@ public:
                             auto cache0 = mCacheBuffer.ptr() + mMaxCacheSize * tId;
                             auto cache1 = cache0 + cmd->size()->data()[2] * bytes;
                             for (int z=0; z<cmd->size()->data()[0]; ++z) {
-                                auto src0Z = src0 + z * stride1[0] * bytes;
-                                auto src1Z = src1 + z * stride2[0] * bytes;
-                                auto dstZ = dst + z * stride0[0] * bytes;
+                                auto src0Z = src0 + (size_t)z * stride1[0] * bytes;
+                                auto src1Z = src1 + (size_t)z * stride2[0] * bytes;
+                                auto dstZ = dst + (size_t)z * stride0[0] * bytes;
                                 for (int y=0; y<cmd->size()->data()[1]; ++y) {
-                                    auto src0Y = src0Z + y * stride1[1] * bytes;
-                                    auto src1Y = src1Z + y * stride2[1] * bytes;
-                                    auto dstY = dstZ + y * stride0[1] * bytes;
+                                    auto src0Y = src0Z + (size_t)y * stride1[1] * bytes;
+                                    auto src1Y = src1Z + (size_t)y * stride2[1] * bytes;
+                                    auto dstY = dstZ + (size_t)y * stride0[1] * bytes;
                                     blit1(cache0, src0Y, cmd->size()->data()[2], stride1[2], 1);
                                     blit2(cache1, src1Y, cmd->size()->data()[2], stride2[2], 1);
                                     proc(dstY, cache0, cache1, cmd->size()->data()[2], -1);

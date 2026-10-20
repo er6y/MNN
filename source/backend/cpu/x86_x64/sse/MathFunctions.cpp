@@ -7,6 +7,7 @@
 //
 
 #include <emmintrin.h>
+#include "../SoftmaxScalar.hpp"
 #include <string.h>
 #include <algorithm>
 #include <math.h>
@@ -71,6 +72,13 @@ void _SSE_MNNExpC8(float* dest, const float* source, float* offset, const float*
 
 void _SSE_MNNSoftmax(float* softmaxDst, const float* softmaxSrc, float* runningMax, float* runningSum, float* updateScale, int outside, int reduceSize, int kvSeqOffset, int validOffset, int pack, bool mask) {
     const int packUnit = 4;
+    if (pack != packUnit) {
+        // Packed layout is narrower than the vector width: the SIMD loop
+        // below would read a full vector per packed group and overflow.
+        MNN::MNNSoftmaxScalar(softmaxDst, softmaxSrc, runningMax, runningSum, updateScale,
+                              outside, reduceSize, kvSeqOffset, validOffset, pack, mask);
+        return;
+    }
     int reduceSizeOuter = 1;
     int reduceSizeInner = reduceSize;
     int stride0         = packUnit;

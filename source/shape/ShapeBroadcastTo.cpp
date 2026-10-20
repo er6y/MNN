@@ -22,6 +22,11 @@ class ShapeBroadcastTo : public SizeComputer {
         auto output = outputs[0];
         int inputDims = input->dimensions();
         int shapeDims = shape->elementSize();
+        if (shapeDims <= 0 && shape->dimensions() > 0) {
+            // A dynamically produced shape tensor may still carry stale buffer
+            // extents when this computer runs; fall back to its 1-D length.
+            shapeDims = shape->length(0);
+        }
         output->buffer().dimensions = inputDims > shapeDims ? inputDims : shapeDims;
         const int dimension = output->dimensions();
         const int* shapeData        = shape->host<int>();

@@ -342,20 +342,9 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
             VARP inputE;
             VARP inputRemain;
             bool fastReshape = false;
+            bool fastReshape2D = false;
             {
                 auto iinfo = input->getInfo();
-                static int dbgCount = 0;
-                if (dbgCount < 8) {
-                    dbgCount++;
-                    if (iinfo == nullptr) {
-                        printf("[fr-dbg] null info\n");
-                    } else {
-                        std::string frs;
-                        for (auto frd : iinfo->dim) frs += std::to_string(frd) + ",";
-                        printf("[fr-dbg] dims=[%s] last=%d num_input=%d dim0=%d\n", frs.c_str(),
-                               iinfo->dim.back(), num_input, iinfo->dim[0]);
-                    }
-                }
                 if (iinfo != nullptr && iinfo->dim.size() >= 2 && iinfo->dim.back() == num_input &&
                     iinfo->dim[0] == 1) {
                     // batch-1 + static channel dim: the post-Conv output reshape
@@ -363,7 +352,16 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
                     // chain built below is mis-scheduled by MNN's resize at large
                     // graph sizes (zero/garbage outputs from block ~17 up).
                     inputRemain = _Unsqueeze(_Scalar<int>(1), {0});
-                    inputE = _Unsqueeze(_Scalar<int>(-1), {0});
+                    if (iinfo->dim.size() == 2) {
+                        // 2-D activation [1, K] -> output is [1, N]: there is no
+                        // middle dimension to keep. Using the 3-D form here would
+                        // add a spurious axis ([1, -1, N]) and corrupt every
+                        // downstream reshape as soon as the graph runs at a size
+                        // other than the one used for tracing.
+                        fastReshape2D = true;
+                    } else {
+                        inputE = _Unsqueeze(_Scalar<int>(-1), {0});
+                    }
                     fastReshape = true;
                 }
             }
@@ -405,7 +403,12 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
             output->setName(expr->outputName(0) + "__matmul_converted");
             //MNN_PRINT("%d\n", output->getInfo()->order);
             output = _ConvertF(output, format);
-            VARP reshapeVar = _ReshapeF(output, _Concat({inputRemain, inputE, outputH}, 0), format);
+            VARP reshapeVar;
+            if (fastReshape2D) {
+                reshapeVar = _ReshapeF(output, _Concat({inputRemain, outputH}, 0), format);
+            } else {
+                reshapeVar = _ReshapeF(output, _Concat({inputRemain, inputE, outputH}, 0), format);
+            }
             if (needSqueezeA) {
                 reshapeVar = _Squeeze(reshapeVar, {0});
             }

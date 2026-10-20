@@ -82,8 +82,8 @@ int CPUSoftmax::_softmaxCommon(const uint8_t *srcData, uint8_t *dstData) {
             }
 
             for (int o=tId; o<mOutside; o+=threadNumber) {
-                auto srcO = srcData + o * outsideStride * mLowOrInt8;
-                auto dstO = dstData + o * outsideStride * mLowOrInt8;
+                auto srcO = srcData + (size_t)o * outsideStride * mLowOrInt8;
+                auto dstO = dstData + (size_t)o * outsideStride * mLowOrInt8;
                 // Max
                 if (mLowOrInt8 == 1) {
                     CPUCastCreator::cast(srcO, tempInput, CPUCastCreator::INT8_TO_FlOAT, outsideStride, mInQuantAttr->scale, mInQuantAttr->zero, mInQuantAttr->min, mInQuantAttr->max, cpuBn);
@@ -157,8 +157,8 @@ int CPUSoftmax::_softmaxCommon(const uint8_t *srcData, uint8_t *dstData) {
             tempOutput = (float*)(mTmpOutput.ptr() + tId * outsideStride * sizeof(float));
         }
         for (int o=tId; o<mOutside; o+=threadNumber) {
-            auto srcO = srcData + o * outsideStride * mLowOrInt8;
-            auto dstO = dstData + o * outsideStride * mLowOrInt8;
+            auto srcO = srcData + (size_t)o * outsideStride * mLowOrInt8;
+            auto dstO = dstData + (size_t)o * outsideStride * mLowOrInt8;
             auto workSrc = (float*)srcO;
             auto workDst = (float*)dstO;
             // Pretreat
