@@ -250,13 +250,9 @@ static SAFEBUFFERS int GetCpuFlags(void) {
       cpu_info |= (cpu_info7[2] & 0x00001000) ? kCpuHasAVX512VBITALG : 0;
       cpu_info |= (cpu_info7[2] & 0x00004000) ? kCpuHasAVX512VPOPCNTDQ : 0;
       cpu_info |= (cpu_info7[2] & 0x00000100) ? kCpuHasGFNI : 0;
-      // AVX512_VNNI is reported in CPUID.(EAX=7,ECX=1):ECX[11], not in the
-      // subleaf 0 ECX where bit 11 is AVX512_VBMI. Reading bit 11 of subleaf 0
-      // flags Cascade Lake and AMD Zen4/5 (VBMI but no VNNI) as VNNI capable,
-      // which made them take the AVX512 kernels at a reduced clock.
-      int cpu_info7_1[4] = {0, 0, 0, 0};
-      CpuId(7, 1, cpu_info7_1);
-      cpu_info |= (cpu_info7_1[2] & 0x00000800) ? kCpuHasAVX512VNNI : 0;
+      // AVX512_VNNI is CPUID.(EAX=7,ECX=0):ECX[11]. VBMI is bit 1 of the same
+      // register, so reading subleaf 0 here is correct.
+      cpu_info |= (cpu_info7[2] & 0x00000800) ? kCpuHasAVX512VNNI : 0;
     }
   }
 #endif

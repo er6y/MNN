@@ -78,10 +78,15 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(X86_64)|(x64)|(X64)|(amd64)|(AMD64)
             target_compile_options(MNNAVX512_VNNI PRIVATE -DMNN_AVX512_VNNI)
             if (MSVC)
                 # upstream bug: the flag was applied to MNNAVX512 instead of the VNNI
-                # target, so GemmInt8_VNNI.cpp was compiled without AVX512 (C1001).
-                # /O1 is required: MSVC 19.29 (VS2019) hits an internal compiler error
-                # (C1001) at /O2 on this file; /O1 still vectorizes the intrinsics.
-                target_compile_options(MNNAVX512_VNNI PRIVATE /arch:AVX512 /Od)
+                # target, so GemmInt8_VNNI.cpp was compiled without AVX512.
+                # The file triggers an internal compiler error (C1001) on MSVC 19.29
+                # (VS2019), so optimization has to be disabled there. MSVC 19.30+
+                # (VS2022) compiles it at the Release /O2 - keep the optimization,
+                # this file holds the int4 (W4) GEMM kernel used by 4-bit models.
+                target_compile_options(MNNAVX512_VNNI PRIVATE /arch:AVX512)
+                if (MSVC_VERSION LESS 1930)
+                    target_compile_options(MNNAVX512_VNNI PRIVATE /Od)
+                endif()
             else()
                 target_compile_options(MNNAVX512_VNNI PRIVATE -m64 -mavx512f -mavx512dq -mavx512vl -mavx512bw -mfma -mavx512vnni)
             endif()
