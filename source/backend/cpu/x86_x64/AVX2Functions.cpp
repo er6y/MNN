@@ -140,10 +140,15 @@ bool AVX2Functions::init(int cpuFlags) {
         _AVX_ExtraInitFMA(coreFunction);
     }
 #ifdef MNN_AVX512
-    if ((cpuFlags & libyuv::kCpuHasAVX512VNNI) || (cpuFlags & libyuv::kCpuHasAVX512VL) ||
-        (cpuFlags & libyuv::kCpuHasAVX512BW) || (cpuFlags & libyuv::kCpuHasAVX512VBMI) ||
-        (cpuFlags & libyuv::kCpuHasAVX512VBITALG) || (cpuFlags & libyuv::kCpuHasAVX512VPOPCNTDQ) ||
-        (cpuFlags & libyuv::kCpuHasAVX512VBMI2)) {
+    // Take the AVX512 path only on CPUs that support the instruction set the
+    // AVX512 kernels need, and require VNNI as well: parts without VNNI
+    // (Cascade Lake, AMD Zen4/5) run AVX512 at a reduced clock, which makes
+    // the AVX512 kernels slower than the AVX2/FMA path for the same work.
+    // VNNI is what actually pays off here - it accelerates the int8 GEMMs.
+    const bool hasAvx512Core = (cpuFlags & libyuv::kCpuHasAVX512BW) &&
+                               (cpuFlags & libyuv::kCpuHasAVX512VL);
+    const bool hasAvx512Vnni = (cpuFlags & libyuv::kCpuHasAVX512VNNI);
+    if (hasAvx512Core && hasAvx512Vnni) {
         coreFunction->pack = 16;
         coreFunction->MNNDeconv2x2Post = nullptr;
         coreFunction->MNNNormPacked = _MNNNormPacked_Float<16>;

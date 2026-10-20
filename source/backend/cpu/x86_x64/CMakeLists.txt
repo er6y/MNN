@@ -59,7 +59,13 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(X86_64)|(x64)|(X64)|(amd64)|(AMD64)
         LIST(REMOVE_ITEM MNN_AVX512_SRC ${MNNAVX512_VNNI_SRC})
         process_asm(MNNAVX512 MNN_AVX512_SRC)
         add_library(MNNAVX512 OBJECT ${MNN_AVX512_SRC})
-        target_compile_options(MNNAVX512 PRIVATE -DMNN_USE_SSE -DMNN_X86_USE_ASM)
+        target_compile_options(MNNAVX512 PRIVATE -DMNN_USE_SSE)
+        # The hand-written AT&T .S kernels need a GNU assembler. Without one the
+        # intrinsics path in GemmCommon.cpp is used instead, so the macro that
+        # pulls in the assembly symbols must stay off.
+        if (NOT (MSVC AND NOT WIN_USE_ASM))
+            target_compile_options(MNNAVX512 PRIVATE -DMNN_X86_USE_ASM)
+        endif()
         if (MSVC)
             target_compile_options(MNNAVX512 PRIVATE /arch:AVX512)
         else()
@@ -127,7 +133,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(X86_64)|(x64)|(X64)|(amd64)|(AMD64)
         target_compile_options(MNNAVXFMA PRIVATE -DMNN_X86_USE_ASM)
         list(APPEND MNN_OBJECTS_TO_LINK ${EXTRA_OBJS})
     endif()
-    if (MNN_AVX512 AND ((NOT MSVC) OR WIN_USE_ASM))
+    if (MNN_AVX512)
+        # The runtime dispatch in AVX2Functions.cpp checks the CPU flags and falls
+        # back to AVX2 when AVX512/VNNI is unavailable, so the kernels can always
+        # be built in. Only the hand-written .S objects are assembler dependent.
         target_compile_options(MNNCPU PRIVATE -DMNN_AVX512)
         target_compile_options(MNNX8664 PRIVATE -DMNN_AVX512)
         if (MNN_AVX512_VNNI)
