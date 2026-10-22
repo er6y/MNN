@@ -184,12 +184,6 @@ void Flux2KleinDiffusion::prepareTxtIds(float* dst, int seqLen) const {
 // ===== load() =====
 bool Flux2KleinDiffusion::load() {
     AUTOTIME;
-    // Weight-mmap pool disabled for this engine: pooled STATIC allocations
-    // deterministically corrupt its legacy 2-input TE path (dot-matrix garbage
-    // output) even though TE embeds verify bit-exact. Root cause pending; all
-    // other engines (MOSS/QwenImage21/Flux3/ZImage + LLM use_mmap) are
-    // pool-verified. Clears any weight_mmap_dir inherited from config.json.
-    setWeightMmap("", 0, 0);
     // Enable flash attention (ATTENTION_OPTION=8) to avoid O(N^2) memory for large seqLen
     // (e.g. 8192 for 1024 edit). Flash attention uses block size 64.
     if (!initRuntimeManagers(/*gpuBufferMode=*/true, /*attentionHint=*/8)) return false;
@@ -203,11 +197,7 @@ bool Flux2KleinDiffusion::load() {
         MNN_PRINT("[Flux2Klein] Load text encoder: %s\n", path.c_str());
         Module::Config tec; tec.shapeMutable = true;
         auto& te_runtime = runtime_manager_cpu_ ? runtime_manager_cpu_ : runtime_manager_;
-        // Weight-mmap pool intentionally DISABLED for Flux2Klein: pooled STATIC
-        // allocations deterministically corrupt its legacy 2-input TE path
-        // (dot-matrix garbage output) even though TE embeds verify bit-exact;
-        // same-name pool files get allocated twice across allocator instances.
-        // Pending root cause - see SPEC. All other engines are pool-verified.
+        pointWeightPoolAt("te");
         mModules[0].reset(Module::load({"input_ids","attention_mask"},{"prompt_embeds"}, path.c_str(), te_runtime, &tec));
         if (!mModules[0]) { MNN_ERROR("[Flux2Klein] Failed to load text encoder\n"); return false; }
     }
@@ -219,6 +209,7 @@ bool Flux2KleinDiffusion::load() {
         {
             auto path = diff_config.unet_model();
             MNN_PRINT("[Flux2Klein] Load transformer: %s\n", path.c_str());
+            pointWeightPoolAt("dit");
             mModules[1].reset(Module::load(
                 {"hidden_states","timestep","encoder_hidden_states","txt_ids","img_ids"},
                 {"output"}, path.c_str(), runtime_manager_, &mc));
@@ -227,14 +218,16 @@ bool Flux2KleinDiffusion::load() {
         {
             auto path = diff_config.vae_decoder_model();
             MNN_PRINT("[Flux2Klein] Load VAE decoder: %s\n", path.c_str());
-            mModules[2].reset(Module::load({"latent_sample"},{"sample"}, path.c_str(), vae_runtime, &mc));
+            pointWeightPoolAt("vae");
+        mModules[2].reset(Module::load({"latent_sample"},{"sample"}, path.c_str(), vae_runtime, &mc));
             if (!mModules[2]) { MNN_ERROR("[Flux2Klein] Failed to load VAE decoder\n"); return false; }
             mModules[2]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
         }
         {
             auto path = diff_config.vae_encoder_model();
             MNN_PRINT("[Flux2Klein] Load VAE encoder: %s\n", path.c_str());
-            mModules[3].reset(Module::load({"sample"},{"latent_sample"}, path.c_str(), vae_runtime, &mc));
+            pointWeightPoolAt("vae");
+        mModules[3].reset(Module::load({"sample"},{"latent_sample"}, path.c_str(), vae_runtime, &mc));
             if (!mModules[3]) { MNN_ERROR("[Flux2Klein] Failed to load VAE encoder\n"); return false; }
             mModules[3]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
         }
@@ -324,6 +317,7 @@ VARP Flux2KleinDiffusion::vae_decoder(VARP latent) {
         auto path = mDiffConfig->vae_decoder_model();
         MNN_PRINT("[Flux2Klein] Load VAE decoder on demand: %s\n", path.c_str());
         auto& vae_runtime = runtime_manager_vae_cpu_ ? runtime_manager_vae_cpu_ : runtime_manager_;
+        pointWeightPoolAt("vae");
         mModules[2].reset(Module::load({"latent_sample"},{"sample"}, path.c_str(), vae_runtime, &mc));
         if (mModules[2]) mModules[2]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
         if (!mModules[2]) { MNN_PRINT("[Flux2Klein] Failed to load VAE decoder\n"); return nullptr; }
@@ -346,6 +340,7 @@ VARP Flux2KleinDiffusion::vae_encoder(VARP image) {
         auto path = mDiffConfig->vae_encoder_model();
         MNN_PRINT("[Flux2Klein] Load VAE encoder on demand: %s\n", path.c_str());
         auto& vae_runtime = runtime_manager_vae_cpu_ ? runtime_manager_vae_cpu_ : runtime_manager_;
+        pointWeightPoolAt("vae");
         mModules[3].reset(Module::load({"sample"},{"latent_sample"}, path.c_str(), vae_runtime, &mc));
         if (mModules[3]) mModules[3]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
         if (!mModules[3]) { MNN_PRINT("[Flux2Klein] Failed to load VAE encoder\n"); return nullptr; }
@@ -429,6 +424,7 @@ VARP Flux2KleinDiffusion::unet(VARP textEmbeds, VARP imageLatents,
         Module::Config mc; mc.shapeMutable = true;
         auto path = mDiffConfig->unet_model();
         MNN_PRINT("[Flux2Klein] Load transformer on demand: %s\n", path.c_str());
+        pointWeightPoolAt("dit");
         mModules[1].reset(Module::load(
             {"hidden_states","timestep","encoder_hidden_states","txt_ids","img_ids"},
             {"output"}, path.c_str(), runtime_manager_, &mc));

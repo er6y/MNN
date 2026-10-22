@@ -8,6 +8,7 @@
 
 #include <string>
 #include "core/BufferAllocator.hpp"
+#include <atomic>
 #include "core/Macro.h"
 #include "MNNFileUtils.h"
 
@@ -104,7 +105,13 @@ public:
     virtual MemChunk onAlloc(size_t size, size_t align) override {
         MNN_ASSERT(size > 0);
         MNN_ASSERT(!mSynced);
-        std::string name = mPrefix + std::to_string(mAllocTimes) + "." + mPosfix;
+        // File names must be unique across ALL MmapAllocator instances in the
+        // process: two runtimes pointing at one pool dir used to open and map
+        // the same-named file independently and clobbered each other's weights.
+        // Cross-run cache reuse is already off (no trust marker is written), so
+        // a process-global atomic counter has no downside.
+        static std::atomic<int> gFileCounter{0};
+        std::string name = mPrefix + std::to_string(gFileCounter.fetch_add(1)) + "." + mPosfix;
         std::string fileName = MNNFilePathConcat(mFileName, name);
         file_t file;
         size = UP_DIV(size, align) * align;
