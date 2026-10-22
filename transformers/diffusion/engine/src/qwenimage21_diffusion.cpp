@@ -383,23 +383,28 @@ bool QwenImage21Diffusion::textEncode(const std::string& prompt, std::vector<flo
         return false;
     }
 
-    // bf16 embedding table lookup (the exported TE consumes float embeds directly)
-    std::vector<uint8_t> tableBytes;
-    if (!readFileBytes(mEmbeddingsFile, tableBytes)) {
+    // bf16 embedding table lookup (the exported TE consumes float embeds directly).
+    // Row-wise seek+read: the full table is ~1GB and loading it whole spikes RSS
+    // right before the TE forward, which gets the process LMK-killed on phones.
+    std::ifstream embFile(mEmbeddingsFile, std::ios::binary);
+    if (!embFile.good()) {
         MNN_ERROR("[QwenImage21] embeddings file missing: %s\n", mEmbeddingsFile.c_str());
         return false;
     }
-    const uint16_t* table = (const uint16_t*)tableBytes.data();
-    const size_t vocab    = tableBytes.size() / 2 / mHidden;
+    embFile.seekg(0, std::ios::end);
+    const size_t vocab = (size_t)embFile.tellg() / 2 / mHidden;
     std::vector<float> embeds((size_t)seq * mHidden);
+    std::vector<uint16_t> row((size_t)mHidden);
     for (int i = 0; i < seq; i++) {
         int id = ids[i];
         if (id < 0 || (size_t)id >= vocab) {
             MNN_ERROR("[QwenImage21] bad token id %d\n", id);
             return false;
         }
+        embFile.seekg((std::streamoff)((size_t)id * mHidden * 2));
+        embFile.read((char*)row.data(), (std::streamsize)mHidden * 2);
         for (int j = 0; j < mHidden; j++) {
-            unsigned u = ((unsigned)table[(size_t)id * mHidden + j]) << 16;
+            unsigned u = ((unsigned)row[j]) << 16;
             float f;
             memcpy(&f, &u, 4);
             embeds[(size_t)i * mHidden + j] = f;

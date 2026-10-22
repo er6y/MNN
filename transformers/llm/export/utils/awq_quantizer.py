@@ -113,29 +113,58 @@ class AwqQuantizer:
 
             # [STEP 2]: Compute and apply scale list
             module_config = []
-            # q, k, v proj
-            module_config.append(
-                dict(
-                    prev_op=self.modules[i].input_layernorm,
-                    layers=[
-                        self.modules[i].self_attn.q_proj,
-                        self.modules[i].self_attn.k_proj,
-                        self.modules[i].self_attn.v_proj,
-                    ],
-                    inp=input_feat["self_attn.q_proj"],
-                    module2inspect=self.modules[i].self_attn,
-                    kwargs=self.module_kwargs,
-                )
-            )
-            # o_proj
-            if self.modules[i].self_attn.v_proj.weight.shape == self.modules[i].self_attn.o_proj.weight.shape:
+            block = self.modules[i]
+            gdn = getattr(block, "linear_attn", None)
+            if gdn is not None:
+                # Gated Delta Net block (qwen3_5 hybrid GDN): in_proj_qkv and
+                # in_proj_z share input_layernorm as prev_op and their concat
+                # rows are group-size aligned, so they form one scale group.
+                # in_proj_b/a (too few rows for a group) and out_proj (behind
+                # RMSNormGated + nonlinear SSM state, no foldable prev_op
+                # Linear) get no scale group — they are still quantized and
+                # clipped via named_linears below.
+                # GDN.forward takes a 2D padding mask; the wrapper passes a
+                # 4D causal one (consumed by DecoderLayer, not by GDN). Calib
+                # samples carry no padding, so drop the mask entirely here.
+                gdn_kwargs = {k: v for k, v in self.module_kwargs.items() if k != "attention_mask"}
+                # The group MUST cover ALL consumers of input_layernorm:
+                # scale_ln_fcs multiplies the norm weight by the scales, so a
+                # consumer left outside the group receives wrongly-scaled
+                # inputs (in_proj_b/a are sigmoid gates; omitting them turned
+                # the exported model into pure-noise images).
                 module_config.append(
                     dict(
-                        prev_op=self.modules[i].self_attn.v_proj,
-                        layers=[self.modules[i].self_attn.o_proj],
-                        inp=input_feat["self_attn.o_proj"],
+                        prev_op=block.input_layernorm,
+                        layers=[gdn.in_proj_qkv, gdn.in_proj_z, gdn.in_proj_b, gdn.in_proj_a],
+                        inp=input_feat["linear_attn.in_proj_qkv"],
+                        module2inspect=gdn,
+                        kwargs=gdn_kwargs,
                     )
                 )
+            else:
+                # q, k, v proj
+                module_config.append(
+                    dict(
+                        prev_op=block.input_layernorm,
+                        layers=[
+                            block.self_attn.q_proj,
+                            block.self_attn.k_proj,
+                            block.self_attn.v_proj,
+                        ],
+                        inp=input_feat["self_attn.q_proj"],
+                        module2inspect=block.self_attn,
+                        kwargs=self.module_kwargs,
+                    )
+                )
+                # o_proj
+                if block.self_attn.v_proj.weight.shape == block.self_attn.o_proj.weight.shape:
+                    module_config.append(
+                        dict(
+                            prev_op=block.self_attn.v_proj,
+                            layers=[block.self_attn.o_proj],
+                            inp=input_feat["self_attn.o_proj"],
+                        )
+                    )
             # mlp gate
             module_config.append(
                 dict(
@@ -222,13 +251,19 @@ class AwqQuantizer:
         # All layer weights are concatted together
         weight = torch.cat([_m.weight for _m in layers], dim=0)
         org_shape = weight.shape
-        # The weights are reshaped to be organised by quantization group
-        weight = weight.view(-1, self.group_size)
-        # Calculates the relative magnitude of the weights within each of the quantization groups,
-        # and rescales each group individually so that each group has weights on a 0-1 scale.
-        w_scale = weight.abs() / (weight.abs().amax(dim=1, keepdim=True) + 1e-6)
-        # Resizes the rescaled weight matrix back up to its original dimensions
-        w_scale = w_scale.view(org_shape)
+        if org_shape[0] % self.group_size == 0:
+            # The weights are reshaped to be organised by quantization group
+            weight = weight.view(-1, self.group_size)
+            # Calculates the relative magnitude of the weights within each of the quantization groups,
+            # and rescales each group individually so that each group has weights on a 0-1 scale.
+            w_scale = weight.abs() / (weight.abs().amax(dim=1, keepdim=True) + 1e-6)
+            # Resizes the rescaled weight matrix back up to its original dimensions
+            w_scale = w_scale.view(org_shape)
+        else:
+            # Concat rows not aligned to the quantization group (e.g. GDN
+            # in_proj_b/a with 32 rows): plain magnitude is enough for the
+            # per-channel mean heuristic.
+            w_scale = weight.abs()
         # Gets the average rescaled magnitude for each output channel
         w_mean = w_scale.mean(0)
         AwqQuantizer.clear_memory(weight)
@@ -428,7 +463,12 @@ class AwqQuantizer:
         w = w.reshape(org_w_shape[0], 1, -1, group_size)
 
         oc_batch_size = 256 if org_w_shape[0] % 256 == 0 else 64  # prevent OOM
-        assert org_w_shape[0] % oc_batch_size == 0
+        if org_w_shape[0] % oc_batch_size != 0:
+            # Small out-features (e.g. GDN in_proj_b/a with 32 rows): pick the
+            # largest batch size that divides co instead of asserting.
+            oc_batch_size = next(
+                (b for b in (128, 64, 32, 16, 8, 4, 2, 1) if org_w_shape[0] % b == 0), 1
+            )
         w_all = w
         best_max_val_all = []
 

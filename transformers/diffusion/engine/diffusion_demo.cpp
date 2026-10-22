@@ -219,6 +219,8 @@ int main(int argc, const char* argv[]) {
         MNN_PRINT("Model type is Qwen-Image-2.1 diffusion model (Qwen3-VL-7B + DiT-7B)\n");
     } else if (model_type == FLUX3_KLEIN_DIFFUSION) {
         MNN_PRINT("Model type is FLUX.3-Image-Klein diffusion model (Qwen3-VL-4B + DiT-5.6B, flow-map)\n");
+    } else if (model_type == MOSS_IMAGE_DIFFUSION) {
+        MNN_PRINT("Model type is MOSS-Image diffusion model (Qwen3.5-9B GDN + DiT-5B, 8-step DMD)\n");
     } else {
         MNN_PRINT("Error: Model type %d not supported, please check\n", (int)model_type);
         return 0;

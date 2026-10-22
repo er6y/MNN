@@ -543,7 +543,16 @@ class LlmModel(PreTrainedModel):
             # text_config.tie_last_hidden_states=False selects this export mode.
             prenorm_mode = (getattr(self.config, "tie_last_hidden_states", True) is False
                             and self.config.model_type in ("qwen3_vl", "qwen3_vl_moe"))
-            if prenorm_mode:
+            # MOSS-Image TE (qwen3_5 GDN): full-sequence POST-final-norm hidden
+            # states = HF AutoModel last_hidden_state semantics (the DiT consumer
+            # was verified against it). Fork-local: qwen3_5's only DiT consumer
+            # is MOSS-Image, so the mode is unconditional for this type.
+            moss_fullseq_mode = self.config.model_type in ("qwen3_5", "qwen3_5_moe")
+            if moss_fullseq_mode:
+                hidden_states = self.final_layernorm(hidden_states)
+                final_layernorm = hidden_states
+                logits = self.lm(hidden_states[:, logits_index_long:, :])
+            elif prenorm_mode:
                 final_layernorm = hidden_states
                 logits = self.lm(self.final_layernorm(hidden_states[:, logits_index_long:, :]))
             else:
