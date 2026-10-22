@@ -286,21 +286,16 @@ Backend* CPURuntime::onCreate(const BackendConfig* config, Backend* origin) cons
         prefix[6] += mPower;
         // prefix += hint().modelUUID + "_";
         if (nullptr == mStaticAllocatorMMap.get()) {
-            // Only support set weightmap dir once. The sync.static marker must
-            // also be evaluated only once, here: later calls would see the
-            // sync file this very run wrote at its first onClearBuffer and
-            // flip useCachedMmap into trust-cache mode mid-run, so executions
-            // created after that (e.g. resize-time re-creations) would skip
-            // weight loading while their STATIC buffers no longer come from
-            // the mmap pool.
+            // Arm the weight-mmap pool once per runtime; it stays armed for the
+            // whole runtime lifetime (weights can be STATIC-allocated at any
+            // resize, e.g. executor re-creation). The pool is transient:
+            // autoRemove deletes the backing files when the runtime dies, and no
+            // trust marker is ever written - weight owners (see
+            // ConvolutionCommon::load) always rewrite pool chunks from the model
+            // files, so correctness never depends on pool content. USE_CACHED_MMAP
+            // therefore stays inert on CPU (value 1, never promoted to trusted 2).
             bool autoRemove = true;
             bool syncValid = false;
-            if (hint().useCachedMmap) {
-                autoRemove = false;
-                std::string fileName = MNNFilePathConcat(hint().weightMemoryPath, prefix + "sync.static");
-                syncValid = MNNFileExist(fileName.c_str());
-                const_cast<RuntimeHint&>(hint()).useCachedMmap += syncValid;
-            }
             mStaticAllocatorRaw = mStaticAllocator;
             auto mmapMem = BufferAllocator::Allocator::createMmap(hint().weightMemoryPath.c_str(), prefix.c_str(), "static", autoRemove, syncValid);
             size_t mmapSize = static_cast<size_t>(hint().mmapFileSize) * 1024 * 1024;
@@ -616,6 +611,9 @@ Backend::MemObj* CPUBackend::allocBuffer(size_t size, Tensor* dest, StorageType 
     // }
     auto& buffer = dest->buffer();
     auto des = TensorUtils::getDescribe(dest);
+    if (size > 64ull * 1024 * 1024 && getenv("MNN_POOL_DEBUG") != nullptr) {
+        MNN_PRINT("[CPUALLOC] type=%d size=%zuMB\n", (int)storageType, (size_t)(size >> 20));
+    }
     MemChunk chunk;
     BufferAllocator* staticAllocator = mRuntime->mStaticAllocator.get();
     switch (storageType) {
@@ -818,18 +816,12 @@ const Runtime* CPUBackend::getRuntime() {
 }
 
 bool CPUBackend::onClearBuffer() {
-    if (nullptr != mRuntime->mStaticAllocatorRaw.get()) {
-        mRuntime->mStaticAllocator->sync();
-        mRuntime->mStaticAllocator = mRuntime->mStaticAllocatorRaw;
-        mRuntime->mStaticAllocatorRaw = nullptr;
-        // The weight-mmap pool is sealed from here on: STATIC buffers acquired
-        // later come from the raw allocator and are not backed by the cache
-        // files, so executions created later (e.g. resize-time re-creations)
-        // must load their weights instead of trusting the cache.
-        if (mRuntime->hint().useCachedMmap > 1) {
-            const_cast<RuntimeHint&>(mRuntime->hint()).useCachedMmap = 1;
-        }
-    }
+    // Note: the weight-mmap pool is intentionally NOT sealed here. With lazy
+    // weight loading (executor creation at resize time, see
+    // ConvolutionCommon::load pool migration), STATIC weight allocations happen
+    // well after the first onClearBuffer of a session; sealing would demote all
+    // of them to raw heap and defeat the pool entirely. The pool lives until the
+    // runtime is destroyed (files removed then, no trust marker is written).
     mCache->reset();
     mDmaInfo->mCurrentDynamicAllocator->release(true);
     return true;

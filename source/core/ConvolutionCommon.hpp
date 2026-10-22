@@ -12,6 +12,7 @@
 #include "Execution.hpp"
 #include "MNN_generated.h"
 namespace MNN {
+class Tensor;
 class MNN_PUBLIC ConvolutionCommon : public Execution {
 public:
     struct Int8Common {
@@ -30,6 +31,9 @@ public:
         Backend* backend = nullptr;
         int originBits = 8;
         int alphaSize;
+        // Weight-mmap pool guards: keep the pool-backed STATIC tensors alive as long
+        // as this Int8Common; their destructor returns the chunks to the allocator.
+        std::vector<std::shared_ptr<Tensor>> weightPoolGuards;
         // Lazy accessors. Element count is alphaSize.
         const float* getAlphaFloat();
         const int16_t* getAlphaHalf();
@@ -72,6 +76,12 @@ public:
         int32_t ic; // ic packed by LP, used by im2col dst data.
         int32_t icup4; // ic packed by LP, used by im2col src data.
     };
+
+private:
+    // Original weight materialization; ConvolutionCommon::load wraps it with the
+    // weight-mmap pool migration.
+    static std::shared_ptr<Int8Common> loadImpl(const Op* op, Backend* backend, bool forceFloat,
+                                                bool forceInt8, void* weightPtr, bool allowFp16Alpha);
 };
 } // namespace MNN
 #endif

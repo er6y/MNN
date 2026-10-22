@@ -209,6 +209,7 @@ bool MossImageDiffusion::ensureTeLoaded() {
     if (mModules[0]) return true;
     auto path = mDiffConfig->text_encoder_model();
     MNN_PRINT("[MossImage] Load text encoder: %s\n", path.c_str());
+    pointWeightPoolAt("te");
     Module::Config tec; tec.shapeMutable = true;
     auto& te_runtime = runtime_manager_cpu_ ? runtime_manager_cpu_ : runtime_manager_;
     // llmexport contract (qwenimage21 style): float embeds go into "input_ids",
@@ -225,6 +226,7 @@ bool MossImageDiffusion::ensureDiTLoaded() {
     Module::Config mc; mc.shapeMutable = true;
     auto path = mDiffConfig->unet_model();
     MNN_PRINT("[MossImage] Load transformer: %s\n", path.c_str());
+    pointWeightPoolAt("dit");
     mModules[1].reset(Module::load(
         {"hidden_states", "timestep", "encoder_hidden_states", "rope_img", "rope_txt"},
         {"out_sample"}, path.c_str(), runtime_manager_, &mc));
@@ -239,6 +241,7 @@ bool MossImageDiffusion::ensureVAELoaded() {
     auto path = mDiffConfig->vae_decoder_model();
     MNN_PRINT("[MossImage] Load VAE decoder: %s\n", path.c_str());
     auto& vae_runtime = runtime_manager_vae_cpu_ ? runtime_manager_vae_cpu_ : runtime_manager_;
+    pointWeightPoolAt("vae");
     mModules[2].reset(Module::load({"latent_sample"}, {"sample"}, path.c_str(), vae_runtime, &mc));
     if (!mModules[2]) { MNN_ERROR("[MossImage] Failed to load VAE decoder\n"); return false; }
     mModules[2]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);

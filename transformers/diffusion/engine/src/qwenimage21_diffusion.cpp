@@ -252,6 +252,26 @@ bool QwenImage21Diffusion::readFileBytes(const std::string& path, std::vector<ui
     return true;
 }
 
+std::shared_ptr<Executor::RuntimeManager> QwenImage21Diffusion::makeCpuRuntimeWithTag(const std::string& tag) {
+    ScheduleConfig cfg;
+    cfg.type          = MNN_FORWARD_CPU;
+    cfg.numThread     = mNumThreads;
+    BackendConfig bc;
+    bc.memory    = BackendConfig::Memory_Low;
+    bc.precision = BackendConfig::Precision_Normal;
+    cfg.backendConfig = &bc;
+    std::shared_ptr<Executor::RuntimeManager> rt(Executor::RuntimeManager::createRuntimeManager(cfg));
+    rt->setHint(Interpreter::DYNAMIC_QUANT_OPTIONS, 0);
+    if (!mWeightMmapPath.empty()) {
+        std::string dir = mWeightMmapPath + (mWeightMmapPath.back() == '/' ? "" : "/") + tag;
+        MNN_PRINT("[QwenImage21] weight mmap pool: %s\n", dir.c_str());
+        rt->setExternalPath(dir, Interpreter::EXTERNAL_WEIGHT_DIR);
+        if (mUseCachedMmap) rt->setHint(Interpreter::USE_CACHED_MMAP, 1);
+        if (mMmapFileSizeMB > 0) rt->setHint(Interpreter::MMAP_FILE_SIZE, mMmapFileSizeMB);
+    }
+    return rt;
+}
+
 bool QwenImage21Diffusion::load() {
     // Runtime hints (weight mmap) come from config.json via the Diffusion base ctor; they must
     // be in place before the module loads so static weights land in the mmap pool.
@@ -266,25 +286,10 @@ bool QwenImage21Diffusion::load() {
     // TE and VAE each get a dedicated CPU runtime manager. Sharing one manager across the
     // three stages miscomputes the DiT image branch (text rows bit-exact, image rows garbage)
     // — same failure family as the fork's earlier shared-allocator useCount bug.
-    auto makeCpuRuntime = [&]() -> std::shared_ptr<Executor::RuntimeManager> {
-        ScheduleConfig cfg;
-        cfg.type          = MNN_FORWARD_CPU;
-        cfg.numThread     = mNumThreads;
-        BackendConfig bc;
-        bc.memory    = BackendConfig::Memory_Low;
-        bc.precision = BackendConfig::Precision_Normal;
-        cfg.backendConfig = &bc;
-        std::shared_ptr<Executor::RuntimeManager> rt(Executor::RuntimeManager::createRuntimeManager(cfg));
-        rt->setHint(Interpreter::DYNAMIC_QUANT_OPTIONS, 0);
-        if (!mWeightMmapPath.empty()) {
-            rt->setExternalPath(mWeightMmapPath, Interpreter::EXTERNAL_WEIGHT_DIR);
-            if (mUseCachedMmap) rt->setHint(Interpreter::USE_CACHED_MMAP, 1);
-            if (mMmapFileSizeMB > 0) rt->setHint(Interpreter::MMAP_FILE_SIZE, mMmapFileSizeMB);
-        }
-        return rt;
-    };
-    std::shared_ptr<Executor::RuntimeManager> teRt = makeCpuRuntime();
-    mVaeRt = makeCpuRuntime();
+    // Each manager gets its own weight-mmap pool subdirectory (te / vae_dec) so the
+    // pools of simultaneously-alive modules cannot collide.
+    std::shared_ptr<Executor::RuntimeManager> teRt = makeCpuRuntimeWithTag("te");
+    mVaeRt = makeCpuRuntimeWithTag("vae_dec");
 
     std::string teModelPath = mTeModelPath;
     {
@@ -318,6 +323,7 @@ bool QwenImage21Diffusion::ensureDiTLoaded() {
         std::string ditPath = mDiTModelPath;
         Module::Config dc;
         dc.shapeMutable = true;
+        pointWeightPoolAt("dit");
         if (mRopeIndexInputs) {
             // dynamic-size DiT: rope indices + additive attention mask are inputs
             // (freqs tables are graph constants; the causal mask is built host-side)
@@ -793,7 +799,10 @@ bool QwenImage21Diffusion::encodeImage(const std::string& imagePath, std::vector
     if (!mModules[3]) {
         Module::Config mc;
         mc.shapeMutable = true;
-        std::shared_ptr<Executor::RuntimeManager> rt = mVaeRt ? mVaeRt : runtime_manager_;
+        // Dedicated runtime with its own pool subdir: the VAE encoder can be alive
+        // together with the decoder (i2i), and shared pool dirs would collide.
+        std::shared_ptr<Executor::RuntimeManager> rt =
+            mWeightMmapPath.empty() ? (mVaeRt ? mVaeRt : runtime_manager_) : makeCpuRuntimeWithTag("vae_enc");
         mModules[3].reset(Module::load({"sample"}, {"latent"}, mVaeEncPath.c_str(), rt, &mc));
         if (!mModules[3]) {
             MNN_ERROR("[QwenImage21] failed to load VAE encoder: %s\n", mVaeEncPath.c_str());

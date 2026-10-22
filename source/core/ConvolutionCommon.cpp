@@ -569,7 +569,47 @@ static bool externalElementCount(int64_t bytes, size_t elementBytes, int& count)
     return true;
 }
 
+// Migrate a large owning weight blob into the weight-mmap pool (STATIC
+// allocation) when the runtime enables EXTERNAL_WEIGHT_DIR: pool memory is
+// file-backed, so the kernel can evict those pages under memory pressure
+// instead of getting the process LMK-killed on phones.
+// No-op when the pool is off, the backend is not CPU, or the blob is small.
+// CPU executors never pass an external weightPtr into load(), so storages
+// reaching this point are always heap-owned by the AutoStorage itself.
+template <typename T>
+static bool migrateStorageToPool(AutoStorage<T>& st, Backend* backend,
+                                 std::vector<std::shared_ptr<Tensor>>& guards) {
+    if (backend == nullptr || st.get() == nullptr || st.size() <= 0) return false;
+    size_t bytes = (size_t)st.size() * sizeof(T);
+    if (bytes < 16ull * 1024 * 1024) return false;
+    auto runtime = backend->getRuntime();
+    if (runtime == nullptr || runtime->hint().weightMemoryPath.empty()) return false;
+    if (backend->type() != MNN_FORWARD_CPU && backend->type() != MNN_FORWARD_CPU_EXTENSION) return false;
+    std::shared_ptr<Tensor> t(Tensor::createDevice<T>({st.size()}));
+    if (t == nullptr) return false;
+    if (!backend->onAcquireBuffer(t.get(), Backend::STATIC)) return false;
+    T* dst = const_cast<T*>(t->host<T>());
+    if (dst == nullptr) return false;
+    ::memcpy(dst, st.get(), bytes);
+    T* old = st.get();
+    st.set(dst, false); // non-owning view into the pool chunk, element count kept
+    MNNMemoryFreeAlign(old);
+    guards.emplace_back(std::move(t));
+    return true;
+}
+
 std::shared_ptr<ConvolutionCommon::Int8Common> ConvolutionCommon::load(const Op* op, Backend* backend, bool forceFloat,
+                                                                    bool forceInt8, void* weightPtr, bool allowFp16Alpha) {
+    auto result = loadImpl(op, backend, forceFloat, forceInt8, weightPtr, allowFp16Alpha);
+    if (result == nullptr || backend == nullptr) {
+        return result;
+    }
+    migrateStorageToPool(result->weight, backend, result->weightPoolGuards);
+    migrateStorageToPool(result->weightFloat, backend, result->weightPoolGuards);
+    return result;
+}
+
+std::shared_ptr<ConvolutionCommon::Int8Common> ConvolutionCommon::loadImpl(const Op* op, Backend* backend, bool forceFloat,
                                                                     bool forceInt8, void* weightPtr, bool allowFp16Alpha) {
     auto conv = op->main_as_Convolution2D();
     auto quan = conv->quanParameter();

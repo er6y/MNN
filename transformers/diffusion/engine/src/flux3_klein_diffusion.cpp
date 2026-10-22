@@ -276,6 +276,7 @@ bool Flux3KleinDiffusion::load() {
         MNN_PRINT("[Flux3Klein] Load text encoder: %s\n", path.c_str());
         Module::Config tec; tec.shapeMutable = true;
         auto& te_runtime = runtime_manager_cpu_ ? runtime_manager_cpu_ : runtime_manager_;
+        pointWeightPoolAt("te");
         mModules[0].reset(Module::load({"input_ids","attention_mask","position_ids"},{"prompt_embeds"}, path.c_str(), te_runtime, &tec));
         if (!mModules[0]) { MNN_ERROR("[Flux3Klein] Failed to load text encoder\n"); return false; }
     }
@@ -286,6 +287,7 @@ bool Flux3KleinDiffusion::load() {
         {
             auto path = diff_config.unet_model();
             MNN_PRINT("[Flux3Klein] Load transformer: %s\n", path.c_str());
+            pointWeightPoolAt("dit");
             mModules[1].reset(Module::load(
                 {"hidden_states","timestep","encoder_hidden_states","target_timestep",
                  "txt_rope_cos","txt_rope_sin","img_rope_cos","img_rope_sin"},
@@ -295,6 +297,7 @@ bool Flux3KleinDiffusion::load() {
         {
             auto path = diff_config.vae_decoder_model();
             MNN_PRINT("[Flux3Klein] Load VAE decoder: %s\n", path.c_str());
+            pointWeightPoolAt("vae_dec");
             mModules[2].reset(Module::load({"latent_sample"},{"sample"}, path.c_str(), vae_runtime, &mc));
             if (!mModules[2]) { MNN_ERROR("[Flux3Klein] Failed to load VAE decoder\n"); return false; }
             mModules[2]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
@@ -302,6 +305,7 @@ bool Flux3KleinDiffusion::load() {
         {
             auto path = diff_config.vae_encoder_model();
             MNN_PRINT("[Flux3Klein] Load VAE encoder: %s\n", path.c_str());
+            pointWeightPoolAt("vae_enc");
             mModules[3].reset(Module::load({"sample"},{"latent_sample"}, path.c_str(), vae_runtime, &mc));
             if (!mModules[3]) { MNN_ERROR("[Flux3Klein] Failed to load VAE encoder\n"); return false; }
             mModules[3]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
@@ -400,6 +404,7 @@ VARP Flux3KleinDiffusion::vae_decoder(VARP latent) {
         Module::Config mc; mc.shapeMutable = true;
         auto path = mDiffConfig->vae_decoder_model();
         MNN_PRINT("[Flux3Klein] Load VAE decoder on demand: %s\n", path.c_str());
+        pointWeightPoolAt("vae_dec");
         auto& vae_runtime = runtime_manager_vae_cpu_ ? runtime_manager_vae_cpu_ : runtime_manager_;
         mModules[2].reset(Module::load({"latent_sample"},{"sample"}, path.c_str(), vae_runtime, &mc));
         if (mModules[2]) mModules[2]->traceOrOptimize(MNN::Interpreter::Session_Resize_Fix);
@@ -446,6 +451,7 @@ VARP Flux3KleinDiffusion::vae_encoder(VARP image) {
         Module::Config mc; mc.shapeMutable = true;
         auto path = mDiffConfig->vae_encoder_model();
         MNN_PRINT("[Flux3Klein] Load VAE encoder on demand: %s\n", path.c_str());
+        pointWeightPoolAt("vae_enc");
         auto& vae_runtime = runtime_manager_vae_cpu_ ? runtime_manager_vae_cpu_ : runtime_manager_;
         mModules[3].reset(Module::load({"sample"},{"latent_sample"}, path.c_str(), vae_runtime, &mc));
         if (!mModules[3]) { MNN_PRINT("[Flux3Klein] Failed to load VAE encoder\n"); return nullptr; }
@@ -520,6 +526,7 @@ VARP Flux3KleinDiffusion::unet(VARP textEmbeds, VARP imageLatents,
         Module::Config mc; mc.shapeMutable = true;
         auto path = mDiffConfig->unet_model();
         MNN_PRINT("[Flux3Klein] Load transformer on demand: %s\n", path.c_str());
+        pointWeightPoolAt("dit");
         mModules[1].reset(Module::load(
             {"hidden_states","timestep","encoder_hidden_states","target_timestep",
              "txt_rope_cos","txt_rope_sin","img_rope_cos","img_rope_sin"},

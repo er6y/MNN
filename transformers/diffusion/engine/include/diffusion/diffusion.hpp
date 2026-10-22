@@ -232,6 +232,12 @@ public:
     // before load(). Applied to every runtime this engine creates.
     void setWeightMmap(const std::string& path, int useCachedMmap, int mmapFileSizeMB);
 
+    // Re-point the weight-mmap pool of every runtime manager to
+    // <weight_mmap_dir>/<tag>. Modules whose lifetimes can overlap (TE / DiT /
+    // VAE enc+dec) must use distinct tags: pool file names are a shared counter
+    // within one directory, so two live modules in the same dir would collide.
+    void pointWeightPoolAt(const std::string& tag);
+
     // Image processing utility functions (static, model-agnostic)
     static VARP resizeAndCenterCrop(VARP image, int targetW, int targetH);
     static VARP bgrToRgb(VARP bgrImage);

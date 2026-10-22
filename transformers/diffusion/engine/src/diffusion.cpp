@@ -142,6 +142,21 @@ void Diffusion::setWeightMmap(const std::string& path, int useCachedMmap, int mm
     mMmapFileSizeMB = mmapFileSizeMB;
 }
 
+void Diffusion::pointWeightPoolAt(const std::string& tag) {
+    if (mWeightMmapPath.empty()) return;
+    std::string dir = mWeightMmapPath + (mWeightMmapPath.back() == '/' ? "" : "/") + tag;
+    MNN_DIFFUSION_MKDIR(dir.c_str());
+    auto apply = [&](const std::shared_ptr<Executor::RuntimeManager>& rt) {
+        if (!rt) return;
+        rt->setExternalPath(dir, MNN::Interpreter::EXTERNAL_WEIGHT_DIR);
+        if (mUseCachedMmap) rt->setHint(MNN::Interpreter::USE_CACHED_MMAP, 1);
+        if (mMmapFileSizeMB > 0) rt->setHint(MNN::Interpreter::MMAP_FILE_SIZE, mMmapFileSizeMB);
+    };
+    apply(runtime_manager_);
+    apply(runtime_manager_cpu_);
+    apply(runtime_manager_vae_cpu_);
+}
+
 // ===== Shared Protected Helpers =====
 
 void Diffusion::loadSchedulerConfig() {

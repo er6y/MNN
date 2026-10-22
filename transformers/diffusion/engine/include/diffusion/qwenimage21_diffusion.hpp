@@ -41,6 +41,10 @@ public:
 
 private:
     void readEngineConfig();
+    // Dedicated CPU runtime manager whose weight-mmap pool is isolated under
+    // <weight_mmap_dir>/<tag>; modules that can be alive at the same time must
+    // not share a pool directory (pool file names collide).
+    std::shared_ptr<Executor::RuntimeManager> makeCpuRuntimeWithTag(const std::string& tag);
     // prompt -> packed text embedding [textLen x hidden] + validity mask [textLen]
     bool textEncode(const std::string& prompt, std::vector<float>& enc, std::vector<int>& tmask);
     static bool readFileBytes(const std::string& path, std::vector<uint8_t>& out);

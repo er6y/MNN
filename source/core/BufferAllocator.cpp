@@ -132,6 +132,9 @@ public:
             }
             mNewMmap = true;
         }
+        if (getenv("MNN_POOL_DEBUG") != nullptr) {
+            MNN_PRINT("[MMAPPOOL] alloc %zuMB -> %s\n", (size_t)(size >> 20), fileName.c_str());
+        }
         void* ptr = MNNMmapFile(file, size);
         if (ptr == nullptr) {
             MNN_ERROR("MNNMmapFile failed for %s, size=%lu\n", fileName.c_str(), size);
