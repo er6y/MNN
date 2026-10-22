@@ -184,6 +184,12 @@ void Flux2KleinDiffusion::prepareTxtIds(float* dst, int seqLen) const {
 // ===== load() =====
 bool Flux2KleinDiffusion::load() {
     AUTOTIME;
+    // Weight-mmap pool disabled for this engine: pooled STATIC allocations
+    // deterministically corrupt its legacy 2-input TE path (dot-matrix garbage
+    // output) even though TE embeds verify bit-exact. Root cause pending; all
+    // other engines (MOSS/QwenImage21/Flux3/ZImage + LLM use_mmap) are
+    // pool-verified. Clears any weight_mmap_dir inherited from config.json.
+    setWeightMmap("", 0, 0);
     // Enable flash attention (ATTENTION_OPTION=8) to avoid O(N^2) memory for large seqLen
     // (e.g. 8192 for 1024 edit). Flash attention uses block size 64.
     if (!initRuntimeManagers(/*gpuBufferMode=*/true, /*attentionHint=*/8)) return false;
@@ -197,6 +203,11 @@ bool Flux2KleinDiffusion::load() {
         MNN_PRINT("[Flux2Klein] Load text encoder: %s\n", path.c_str());
         Module::Config tec; tec.shapeMutable = true;
         auto& te_runtime = runtime_manager_cpu_ ? runtime_manager_cpu_ : runtime_manager_;
+        // Weight-mmap pool intentionally DISABLED for Flux2Klein: pooled STATIC
+        // allocations deterministically corrupt its legacy 2-input TE path
+        // (dot-matrix garbage output) even though TE embeds verify bit-exact;
+        // same-name pool files get allocated twice across allocator instances.
+        // Pending root cause - see SPEC. All other engines are pool-verified.
         mModules[0].reset(Module::load({"input_ids","attention_mask"},{"prompt_embeds"}, path.c_str(), te_runtime, &tec));
         if (!mModules[0]) { MNN_ERROR("[Flux2Klein] Failed to load text encoder\n"); return false; }
     }

@@ -299,7 +299,7 @@ Backend* CPURuntime::onCreate(const BackendConfig* config, Backend* origin) cons
             mStaticAllocatorRaw = mStaticAllocator;
             auto mmapMem = BufferAllocator::Allocator::createMmap(hint().weightMemoryPath.c_str(), prefix.c_str(), "static", autoRemove, syncValid);
             size_t mmapSize = static_cast<size_t>(hint().mmapFileSize) * 1024 * 1024;
-            mStaticAllocator.reset(new EagerBufferAllocator(mmapMem, 32, mmapSize));
+            mStaticAllocator.reset(new EagerBufferAllocator(mmapMem, 64, mmapSize));
             mStaticAllocatorMMap = mStaticAllocator;
         }
     }

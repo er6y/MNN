@@ -581,7 +581,11 @@ static bool migrateStorageToPool(AutoStorage<T>& st, Backend* backend,
                                  std::vector<std::shared_ptr<Tensor>>& guards) {
     if (backend == nullptr || st.get() == nullptr || st.size() <= 0) return false;
     size_t bytes = (size_t)st.size() * sizeof(T);
-    if (bytes < 16ull * 1024 * 1024) return false;
+    static size_t minBytes = []() {
+        const char* e = getenv("MNN_POOL_MIN_MB");
+        return e ? (size_t)atoi(e) * 1024 * 1024 : 16ull * 1024 * 1024;
+    }();
+    if (bytes < minBytes) return false;
     auto runtime = backend->getRuntime();
     if (runtime == nullptr || runtime->hint().weightMemoryPath.empty()) return false;
     if (backend->type() != MNN_FORWARD_CPU && backend->type() != MNN_FORWARD_CPU_EXTENSION) return false;
